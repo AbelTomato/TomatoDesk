@@ -1,6 +1,6 @@
 # 实施计划：TomatoDesk MVP
 
-- 状态：进行中（步骤 A、B 已完成，下一步为步骤 C）
+- 状态：进行中（步骤 A、B、C 已完成，下一步为步骤 D）
 - 创建日期：2026-11-23
 - 最后更新：2026-11-24
 - 负责人：项目负责人
@@ -116,18 +116,18 @@ src-tauri/
 
 ### C. 数据库和领域模型
 
-1. [ ] 选择 SQLite 文件路径并自动创建目录。
-2. [ ] 建立迁移执行器。
-3. [ ] 创建 `items` 表。
-4. [ ] 创建 `tags` 和 `item_tags` 表。
-5. [ ] 创建 `github_repos` 表。
-6. [ ] 创建 `github_events` 表。
-7. [ ] 创建 `sync_runs` 表。
-8. [ ] 创建 FTS5 虚拟表和同步逻辑。
-9. [ ] 定义 `ItemKind`、`ItemStatus`、`GithubEventType` 等领域枚举。
-10. [ ] 为来源事件建立唯一约束，保证同步幂等。
-11. [ ] 实现 Item、Tag、GithubRepo、SyncRun Repository。
-12. [ ] 定义统一数据库错误类型。
+1. [x] 选择 SQLite 文件路径并自动创建目录。
+2. [x] 建立迁移执行器。
+3. [x] 创建 `items` 表。
+4. [x] 创建 `tags` 和 `item_tags` 表。
+5. [x] 创建 `github_repos` 表。
+6. [x] 创建 `github_events` 表。
+7. [x] 创建 `sync_runs` 表。
+8. [x] 创建 FTS5 虚拟表和同步逻辑。
+9. [x] 定义 `ItemKind`、`ItemStatus`、`GithubEventType` 等领域枚举。
+10. [x] 为来源事件建立唯一约束，保证同步幂等。
+11. [x] 实现 Item、Tag、GithubRepo、SyncRun Repository。
+12. [x] 定义统一数据库错误类型。
 
 核心字段：
 
@@ -268,3 +268,4 @@ sync_runs: id, source, started_at, finished_at, status, error
 - 2026-11-23：按 README 的 WSL 调用方式重新执行 `scripts/windows-cargo.ps1 check --locked`，确认 Windows Cargo 使用 `C:\Users\ABELTO~1\AppData\Local\Temp\TomatoDesk\cargo-target` 并成功完成检查；剩余待验证项不变。
 - 2026-11-23：在 Windows 本地临时工作副本中完成 `pnpm tauri info` 和 `pnpm tauri dev`；确认 WebView2/Visual Studio/MSVC/Node/pnpm 可用，窗口响应正常，按钮调用 Rust `get_app_info` 后显示 `TomatoDesk 0.1.0 · development`。修正 Vite Windows WebView 的 `/@vite/client` 兼容处理，步骤 A 完成，进入步骤 B。
 - 2026-11-23：将 Vite 兼容处理限定为 Windows 后重新启动临时工作副本，页面和 Rust Command 验证仍通过；`pnpm build`、`pnpm lint`、`pnpm format:check`、Rust 格式检查和 Windows Cargo `check --locked` 均通过。
+- 2026-11-24：完成步骤 C。SQLite 位于 Tauri `app_data_dir`，自动建目录并执行版本化迁移；建立领域模型、Item/Tag/GitHub repo/GitHub event/SyncRun Repository、FTS5 触发器及事件唯一约束。5 项 Rust 数据库测试通过；Windows Cargo `check --locked`、Clippy、Rust 格式、`pnpm build` 和 `pnpm lint` 通过。Tauri 开发应用启动后在 `%APPDATA%\com.tomatodesk.app\tomatodesk.sqlite3` 创建数据库，SQLite 查询确认迁移版本 1 和所需表。Clippy 保留步骤 B 的 `show_notification` 未使用警告；应用已关闭。

@@ -1,8 +1,10 @@
 mod application;
 mod commands;
-mod domain;
-mod infrastructure;
+pub mod domain;
+pub mod infrastructure;
 mod platform;
+
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -19,7 +21,11 @@ pub fn run() {
                 .build(),
         )
         .invoke_handler(tauri::generate_handler![commands::get_app_info])
-        .setup(platform::setup)
+        .setup(|app| {
+            let database_path = app.path().app_data_dir()?.join("tomatodesk.sqlite3");
+            app.manage(infrastructure::db::Database::open(database_path)?);
+            platform::setup(app)
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
