@@ -1,0 +1,44 @@
+@import "tailwindcss";
+
+@theme {
+  --color-tomato-50: #fff7f5;
+  --color-tomato-100: #ffe9e4;
+  --color-tomato-500: #e2533f;
+  --color-tomato-600: #c8412f;
+  --color-ink-950: #172026;
+  --color-ink-700: #46515a;
+  --color-ink-500: #75818a;
+  --color-line: #dfe4e7;
+  --color-surface: #ffffff;
+  --color-canvas: #f7f8fa;
+  --breakpoint-xs: 30rem;
+  --spacing-panel: 22rem;
+}
+
+:root {
+  font-family:
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  color: var(--color-ink-950);
+  background: var(--color-canvas);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  min-width: 20rem;
+  min-height: 100vh;
+  margin: 0;
+}
+
+button,
+input {
+  font: inherit;
+}
