@@ -40,7 +40,7 @@
 2. [x] 提交当前 MVP 实现与既有文档改动。
 3. [x] 添加 Windows CI、标签 Release workflows，并更新发布说明。
 4. [x] 验证 YAML、前端、Rust 和 NSIS 构建，提交 CI/CD 改动。
-5. [ ] 推送 `main` 和 `v0.1.0`，确认 GitHub Actions 成功并核验 Release 资产。
+5. [x] 推送 `main` 和 `v0.1.0`，确认 GitHub Actions 成功并核验 Release 资产。
 
 ## 涉及文件与模块
 
@@ -67,9 +67,9 @@
 
 ## 完成标准
 
-- [ ] 当前 MVP 与 CI/CD 改动均已通过相应验证并分别提交。
-- [ ] `main` 和 `v0.1.0` 已推送，GitHub Release 已发布安装包、SHA-256 和 manifest。
-- [ ] README、实施计划和开发日志准确记录结果及未完成的升级安装验证。
+- [x] 当前 MVP 与 CI/CD 改动均已通过相应验证并分别提交。
+- [x] `main` 和 `v0.1.0` 已推送，GitHub Release 已发布安装包、SHA-256 和 manifest。
+- [x] README、实施计划和开发日志准确记录结果及未完成的升级安装验证。
 
 ## 进度记录
 
@@ -77,3 +77,6 @@
 - 2026-11-24 18:38：完成当前 MVP 改动审阅和提交前验证；共享 Cargo target 缺少 SQLite build 输出，使用独立 Windows 临时 target 后 Rust 测试 9/9、`check` 与 Clippy 通过；前端安装、lint、build 和 Rust 格式检查通过。
 - 2026-11-24 18:39：当前 MVP 实现与文档已提交为 `2f33633`（`feat: implement core TomatoDesk workflows`）。
 - 2026-11-24 22:45：新增 `.github/workflows/ci.yml`、`release.yml` 与 `docs/releases/v0.1.0.md`。核对四个外部 Action 的固定 SHA 与输入参数；workflow YAML 解析通过；本地 `pnpm lint`、`pnpm build` 通过。Release 正文改为读取 `docs/releases/<标签>.md`，缺失时回退到默认说明，避免正文与标签不一致。NSIS 构建改由 Release workflow 在 Windows runner 上验证。
+- 2026-11-24 23:00：推送 `main` 后首次 CI 在 `cargo fmt --all -- --check` 失败，原因是 `src-tauri/src/application/export.rs` 中 `markdown_heading` 的链式调用未按 rustfmt 折叠。修复后以 `563e2f6` 单独提交，第二次 CI 的 lint、build、fmt、test、check、Clippy 全部通过。
+- 2026-11-24 23:10：推送 `v0.1.0` 标签后 Release workflow 用时 16m43s 成功，`checks` 6m36s、`Build and publish Windows release` 10m01s；Release 已发布并标记为 Latest，正文取自 `docs/releases/v0.1.0.md`。
+- 备注：本地 `%TEMP%\TomatoDesk\cargo-target` 共享 target 缺少 `libsqlite3-sys` 生成的 `bindgen.rs`，导致本地 `cargo test` 无法复用；该问题不影响 GitHub runner 的独立 target，本地验证需改用干净的临时 target。
