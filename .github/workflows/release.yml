@@ -1,0 +1,126 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    name: Build and publish Windows release
+    needs: checks
+    runs-on: windows-2025
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up pnpm and Node.js
+        uses: pnpm/setup@731dfb6463bbd11c11fd0ee11fe00ed0e36d48a1 # v3
+        with:
+          version: 11.3.0
+          runtime: node@24
+          cache: true
+          install: false
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # stable action
+        with:
+          toolchain: stable
+
+      - name: Install NSIS
+        shell: pwsh
+        run: |
+          choco install nsis --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw "NSIS installation failed." }
+          $nsisPath = Join-Path ${env:ProgramFiles(x86)} "NSIS"
+          if (Test-Path $nsisPath) {
+            Add-Content -Path $env:GITHUB_PATH -Value $nsisPath
+            $env:PATH = "$nsisPath;$env:PATH"
+          }
+          if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) {
+            throw "NSIS makensis was not found after installation."
+          }
+          makensis /VERSION
+          if ($LASTEXITCODE -ne 0) { throw "NSIS verification failed." }
+
+      - name: Verify tag matches application version
+        shell: pwsh
+        run: |
+          $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $tauriVersion = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          if ($packageVersion -ne $tauriVersion) {
+            throw "package.json ($packageVersion) and tauri.conf.json ($tauriVersion) versions differ."
+          }
+          if ($env:GITHUB_REF_NAME -ne "v$tauriVersion") {
+            throw "Tag $env:GITHUB_REF_NAME does not match application version v$tauriVersion."
+          }
+
+      - name: Install JavaScript dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build installer and manifest
+        shell: pwsh
+        run: ./scripts/build-installer.ps1
+
+      - name: Verify release files
+        shell: pwsh
+        run: |
+          $tauriVersion = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $shortCommit = (git rev-parse --short HEAD).Trim()
+          if ($LASTEXITCODE -ne 0) { throw "Unable to determine source commit." }
+          $artifactDirectory = Join-Path "artifacts/installers/$tauriVersion" $shortCommit
+          $manifestPath = Join-Path $artifactDirectory "manifest.json"
+          if (-not (Test-Path $manifestPath)) { throw "Build manifest was not generated." }
+          $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+          if ($manifest.version -ne $tauriVersion) { throw "Manifest version does not match application version." }
+          if ($manifest.sourceCommit -ne $shortCommit) { throw "Manifest commit does not match tagged source." }
+          if ($manifest.workingTreeDirty) { throw "Release build source tree is dirty." }
+          $installers = @(Get-ChildItem $artifactDirectory -Filter "*-setup.exe" -File)
+          if ($installers.Count -ne 1) { throw "Expected exactly one NSIS setup executable." }
+          $installer = $installers[0]
+          $checksumPath = "$($installer.FullName).sha256"
+          if (-not (Test-Path $checksumPath)) { throw "SHA-256 file was not generated." }
+          $declaredHash = (Get-Content $checksumPath -Raw -ErrorAction Stop) -split "\s+" | Select-Object -First 1
+          $actualHash = (Get-FileHash $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($declaredHash -ne $actualHash) { throw "Installer SHA-256 does not match the checksum file." }
+
+      - name: Resolve release notes
+        shell: pwsh
+        run: |
+          $notesPath = "docs/releases/$env:GITHUB_REF_NAME.md"
+          if (Test-Path $notesPath) {
+            Copy-Item -LiteralPath $notesPath -Destination "release-notes.md" -Force
+            Write-Host "Using versioned release notes from $notesPath."
+          }
+          else {
+            Write-Host "No release notes for $env:GITHUB_REF_NAME; using the default body."
+            "Windows x64 NSIS installer for TomatoDesk $env:GITHUB_REF_NAME. This release is unsigned; verify the attached SHA-256 before installing." |
+              Set-Content -Path "release-notes.md" -Encoding utf8
+          }
+          if ([string]::IsNullOrWhiteSpace((Get-Content "release-notes.md" -Raw))) {
+            throw "Release notes resolved to an empty body."
+          }
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3
+        with:
+          name: TomatoDesk ${{ github.ref_name }}
+          body_path: release-notes.md
+          generate_release_notes: false
+          draft: false
+          prerelease: false
+          make_latest: true
+          fail_on_unmatched_files: true
+          files: artifacts/installers/*/*/*
+          token: ${{ secrets.GITHUB_TOKEN }}
