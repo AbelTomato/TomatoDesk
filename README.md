@@ -14,6 +14,16 @@ pnpm tauri dev
 
 Windows 开发还需要 WebView2 和 Visual Studio C++ Build Tools。工程进度和验证记录见 `docs/execution-plans/` 与 `docs/development-logs/`。
 
+### 构建 Windows 安装包
+
+在 Windows PowerShell 中运行：
+
+```powershell
+./scripts/build-installer.ps1
+```
+
+脚本使用 Windows MSVC Cargo，并将安装包、SHA-256 校验文件和构建清单写入 `artifacts/installers/<版本>/<短提交号>/`。`artifacts/` 为本地构建产物，不纳入版本控制。
+
 ### 从 WSL 调用 Windows Cargo
 
 WSL 可以通过 Windows PowerShell 使用主机上的 MSVC Rust 工具链。项目源码通过 WSL UNC 路径传给 PowerShell，编译产物放在 Windows 本地目录：

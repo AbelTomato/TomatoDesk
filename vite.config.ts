@@ -12,9 +12,24 @@ const windowsWebviewCompatibility: Plugin = {
       if (request.url?.startsWith("/@vite/client")) {
         response.statusCode = 200;
         response.setHeader("Content-Type", "application/javascript");
-        response.end(
-          "export const createHotContext = () => ({ accept() {}, dispose() {}, prune() {}, on() {}, send() {}, invalidate() {}, decline() {} }); export const updateStyle = () => {}; export const removeStyle = () => {};",
-        );
+        response.end(`
+          export const createHotContext = () => ({ accept() {}, dispose() {}, prune() {}, on() {}, send() {}, invalidate() {}, decline() {} });
+          const styles = new Map();
+          export const updateStyle = (id, content) => {
+            let style = styles.get(id);
+            if (!style) {
+              style = document.createElement("style");
+              style.setAttribute("data-vite-dev-id", id);
+              document.head.appendChild(style);
+              styles.set(id, style);
+            }
+            style.textContent = content;
+          };
+          export const removeStyle = (id) => {
+            styles.get(id)?.remove();
+            styles.delete(id);
+          };
+        `);
         return;
       }
       next();
@@ -33,7 +48,7 @@ export default defineConfig(() => ({
   plugins: [
     react(),
     tailwindcss(),
-    // Tauri's Windows WebView does not need HMR; serve the CSS runtime imports as no-ops.
+    // Tauri's Windows WebView does not need HMR, but CSS modules still need style injection.
     ...(isWindows ? [windowsWebviewCompatibility] : []),
   ],
 

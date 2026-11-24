@@ -1,7 +1,7 @@
 use std::error::Error;
 
 use tauri::{
-    App, AppHandle, Manager, Runtime, WindowEvent,
+    App, AppHandle, Emitter, Manager, Runtime, WindowEvent,
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
 };
@@ -28,6 +28,23 @@ pub fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
 
 pub fn show_quick_capture_window<R: Runtime>(app: &AppHandle<R>) {
     show_window(app, QUICK_CAPTURE_WINDOW);
+    if let Some(window) = app.get_webview_window(QUICK_CAPTURE_WINDOW) {
+        let _ = window.emit("quick-capture-opened", ());
+    }
+}
+
+pub fn complete_quick_capture<R: Runtime>(app: &AppHandle<R>) {
+    hide_quick_capture_window(app);
+    show_main_window(app);
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+        let _ = window.emit("quick-capture-completed", ());
+    }
+}
+
+pub fn hide_quick_capture_window<R: Runtime>(app: &AppHandle<R>) {
+    if let Some(window) = app.get_webview_window(QUICK_CAPTURE_WINDOW) {
+        let _ = window.hide();
+    }
 }
 
 pub fn show_notification<R: Runtime>(
