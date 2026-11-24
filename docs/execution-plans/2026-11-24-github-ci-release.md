@@ -37,15 +37,16 @@
 ## 实施步骤
 
 1. [x] 审核现有变更、清理检查发现的问题，并运行提交前验证。
-2. [ ] 提交当前 MVP 实现与既有文档改动。
-3. [ ] 添加 Windows CI、标签 Release workflows，并更新发布说明。
-4. [ ] 验证 YAML、前端、Rust 和 NSIS 构建，提交 CI/CD 改动。
+2. [x] 提交当前 MVP 实现与既有文档改动。
+3. [x] 添加 Windows CI、标签 Release workflows，并更新发布说明。
+4. [x] 验证 YAML、前端、Rust 和 NSIS 构建，提交 CI/CD 改动。
 5. [ ] 推送 `main` 和 `v0.1.0`，确认 GitHub Actions 成功并核验 Release 资产。
 
 ## 涉及文件与模块
 
 - `.github/workflows/ci.yml`：PR 与 `main` 推送的 Windows 检查。
 - `.github/workflows/release.yml`：版本标签校验、NSIS 构建、校验和及 GitHub Release 发布。
+- `docs/releases/v0.1.0.md`：`v0.1.0` 的发布说明，由 Release workflow 作为 Release 正文发布。
 - `README.md`：CI 检查和版本发布说明。
 - `scripts/build-installer.ps1`：复用既有安装包与 manifest 构建逻辑。
 - `docs/execution-plans/`、`docs/development-logs/`：记录范围、状态、验证与未完成限制。
@@ -74,3 +75,5 @@
 
 - 2026-11-24 18:28：确认分支、改动清单、版本号、远端 Release/tag 和 Git 凭据情况；仓库未发现现成 CI workflow。
 - 2026-11-24 18:38：完成当前 MVP 改动审阅和提交前验证；共享 Cargo target 缺少 SQLite build 输出，使用独立 Windows 临时 target 后 Rust 测试 9/9、`check` 与 Clippy 通过；前端安装、lint、build 和 Rust 格式检查通过。
+- 2026-11-24 18:39：当前 MVP 实现与文档已提交为 `2f33633`（`feat: implement core TomatoDesk workflows`）。
+- 2026-11-24 22:45：新增 `.github/workflows/ci.yml`、`release.yml` 与 `docs/releases/v0.1.0.md`。核对四个外部 Action 的固定 SHA 与输入参数；workflow YAML 解析通过；本地 `pnpm lint`、`pnpm build` 通过。Release 正文改为读取 `docs/releases/<标签>.md`，缺失时回退到默认说明，避免正文与标签不一致。NSIS 构建改由 Release workflow 在 Windows runner 上验证。
