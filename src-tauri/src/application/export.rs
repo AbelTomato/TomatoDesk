@@ -159,8 +159,7 @@ fn status_label(status: ItemStatus) -> &'static str {
 }
 
 fn markdown_heading(value: &str) -> String {
-    value
-        .replace(['\r', '\n', '\t'], " ")
+    value.replace(['\r', '\n', '\t'], " ")
 }
 
 fn markdown_text(value: &str) -> String {
