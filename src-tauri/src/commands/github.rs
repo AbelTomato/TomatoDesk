@@ -82,17 +82,38 @@ pub fn delete_github_token() -> CommandResult<GithubTokenStatus> {
     Ok(GithubTokenStatus { configured: false })
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SyncGithubRepoInput {
+    id: String,
+    scope: Option<application::github::SyncScope>,
+}
+
+impl SyncGithubRepoInput {
+    fn validate(self) -> CommandResult<(String, application::github::SyncScope)> {
+        let id = self.id.trim().to_owned();
+        if id.is_empty() {
+            return Err(CommandError::validation("id cannot be empty"));
+        }
+        Ok((
+            id,
+            self.scope
+                .unwrap_or(application::github::SyncScope::Incremental),
+        ))
+    }
+}
+
 #[tauri::command]
 pub async fn sync_github_repo(
     app: AppHandle,
     database: State<'_, Database>,
     input: Option<serde_json::Value>,
 ) -> CommandResult<application::github::SyncSummary> {
-    let input = parse_input::<super::dto::ItemIdInput>(input)?.validate()?;
+    let (id, scope) = parse_input::<SyncGithubRepoInput>(input)?.validate()?;
     let token = secrets::get_github_token()
         .map_err(CommandError::internal)?
         .ok_or_else(|| CommandError::validation("请先保存 GitHub Token"))?;
-    let result = application::github::sync_github_repo(&database, &input.id, &token).await;
+    let result = application::github::sync_github_repo(&database, &id, &token, scope).await;
     match &result {
         Ok(summary) => {
             let body = format!("同步完成，新增 {} 条更新。", summary.imported_count);

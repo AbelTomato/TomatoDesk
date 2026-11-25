@@ -12,6 +12,7 @@ fn item(title: &str, note: &str) -> NewItem {
         title: Some(title.into()),
         summary: None,
         note: Some(note.into()),
+        body: None,
     }
 }
 
@@ -28,7 +29,7 @@ fn migrations_are_idempotent_and_items_support_crud() {
             )
         })
         .unwrap();
-    assert_eq!(migration_count, 1);
+    assert_eq!(migration_count, 2);
 
     let items = db.items();
     let created = items.create(item("First title", "first note")).unwrap();
@@ -94,7 +95,8 @@ fn tags_and_item_tag_links_obey_foreign_keys() {
     let created = items.create(item("Tagged", "item")).unwrap();
     let tag = tags.create("Reading", Some("#3b82f6")).unwrap();
 
-    tags.set_item_tags(&created.id, &[tag.id.clone()]).unwrap();
+    tags.set_item_tags(&created.id, std::slice::from_ref(&tag.id))
+        .unwrap();
     assert_eq!(tags.for_item(&created.id).unwrap(), vec![tag.clone()]);
     assert_eq!(tags.get(&tag.id).unwrap(), Some(tag.clone()));
     assert_eq!(tags.list().unwrap(), vec![tag.clone()]);
@@ -153,4 +155,50 @@ fn github_events_are_idempotent_and_sync_runs_can_finish() {
 
     assert!(repos.delete(&repo.id).unwrap());
     assert!(events.list_for_repo(&repo.id).unwrap().is_empty());
+}
+
+#[test]
+fn body_migration_splits_long_summaries_and_indexes_body() {
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    connection
+        .execute_batch(include_str!("../../../migrations/0001_initial.sql"))
+        .unwrap();
+    let long_summary = "alpha ".repeat(100);
+    connection
+        .execute(
+            "INSERT INTO items(id, kind, source, summary) VALUES ('a', 'note', 'manual', ?1)",
+            [&long_summary],
+        )
+        .unwrap();
+
+    connection
+        .execute_batch(include_str!("../../../migrations/0002_item_body.sql"))
+        .unwrap();
+
+    let (body, summary): (Option<String>, Option<String>) = connection
+        .query_row(
+            "SELECT body, summary FROM items WHERE id = 'a'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(body.as_deref(), Some(long_summary.as_str()));
+
+    let summary = summary.unwrap();
+    assert_eq!(
+        summary.chars().count(),
+        201,
+        "200 characters plus an ellipsis"
+    );
+    assert!(summary.ends_with('…'));
+
+    // 重建后的 FTS 覆盖正文，正文里的词也能命中。
+    let hits: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM items_fts WHERE items_fts MATCH ?1",
+            ["\"alpha\""],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(hits, 1);
 }

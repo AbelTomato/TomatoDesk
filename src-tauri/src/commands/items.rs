@@ -1,12 +1,18 @@
+use reqwest::Url;
 use tauri::State;
 
 use crate::{
-    domain::{Item, ItemStatus, NewItem},
-    infrastructure::db::Database,
+    domain::{
+        Item, ItemBody, ItemKind, ItemPage, ItemStatus, ItemStatusCounts, ItemSummary, NewItem,
+    },
+    infrastructure::{db::Database, web_metadata::fetch_web_text},
 };
 
 use super::{
-    dto::{CreateItemInput, ItemIdInput, SearchItemsInput, UpdateItemInput, parse_input},
+    dto::{
+        CountItemsInput, CreateItemInput, ItemIdInput, ListItemsPageInput, SearchItemsInput,
+        UpdateItemInput, parse_input,
+    },
     error::{CommandError, CommandResult},
 };
 
@@ -21,6 +27,7 @@ pub(super) fn create_item_in(database: &Database, input: CreateItemInput) -> Com
             title: input.title,
             summary: input.summary,
             note: input.note,
+            body: None,
         })
         .map_err(Into::into)
 }
@@ -34,8 +41,22 @@ pub(super) fn get_item_in(database: &Database, input: ItemIdInput) -> CommandRes
         .ok_or_else(|| CommandError::not_found("item"))
 }
 
-pub(super) fn list_items_in(database: &Database) -> CommandResult<Vec<Item>> {
-    database.items().list().map_err(Into::into)
+pub(super) fn list_items_page_in(
+    database: &Database,
+    input: ListItemsPageInput,
+) -> CommandResult<ItemPage> {
+    let query = input.into_query()?;
+    database.items().page(&query).map_err(Into::into)
+}
+
+pub(super) fn count_items_in(
+    database: &Database,
+    input: CountItemsInput,
+) -> CommandResult<ItemStatusCounts> {
+    database
+        .items()
+        .count_by_status(input.kind)
+        .map_err(Into::into)
 }
 
 pub(super) fn update_item_in(database: &Database, input: UpdateItemInput) -> CommandResult<Item> {
@@ -72,9 +93,53 @@ pub(super) fn archive_item_in(database: &Database, input: ItemIdInput) -> Comman
 pub(super) fn search_items_in(
     database: &Database,
     input: SearchItemsInput,
-) -> CommandResult<Vec<Item>> {
+) -> CommandResult<Vec<ItemSummary>> {
     let input = input.validate()?;
     database.items().search(&input.query).map_err(Into::into)
+}
+
+/// 详情正文按需加载：本地有就返回，链接类为空时回源抓一次并写回缓存，
+/// GitHub 条目只返回本地缓存，不触发网络请求。
+pub(super) async fn get_item_body_in(
+    database: &Database,
+    input: ItemIdInput,
+) -> CommandResult<ItemBody> {
+    let input = input.validate()?;
+    let body = database
+        .items()
+        .get_body(&input.id)
+        .map_err(CommandError::from)?
+        .ok_or_else(|| CommandError::not_found("item"))?;
+
+    if body
+        .body
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        return Ok(body);
+    }
+    if body.kind != ItemKind::Link {
+        return Ok(body);
+    }
+    let Some(url) = body
+        .url
+        .as_deref()
+        .and_then(|value| Url::parse(value).ok())
+        .filter(|url| matches!(url.scheme(), "http" | "https"))
+    else {
+        return Ok(body);
+    };
+    let Some(text) = fetch_web_text(&url).await else {
+        return Ok(body);
+    };
+    database
+        .items()
+        .set_body(&body.id, &text)
+        .map_err(CommandError::from)?;
+    Ok(ItemBody {
+        body: Some(text),
+        ..body
+    })
 }
 
 #[tauri::command]
@@ -94,8 +159,32 @@ pub fn get_item(
 }
 
 #[tauri::command]
-pub fn list_items(database: State<'_, Database>) -> CommandResult<Vec<Item>> {
-    list_items_in(&database)
+pub fn list_items_page(
+    database: State<'_, Database>,
+    input: Option<serde_json::Value>,
+) -> CommandResult<ItemPage> {
+    list_items_page_in(&database, parse_input(input)?)
+}
+
+#[tauri::command]
+pub fn count_items_by_status(
+    database: State<'_, Database>,
+    input: Option<serde_json::Value>,
+) -> CommandResult<ItemStatusCounts> {
+    let input = match input {
+        Some(value) => serde_json::from_value(value)
+            .map_err(|_| CommandError::validation("input is invalid"))?,
+        None => CountItemsInput::default(),
+    };
+    count_items_in(&database, input)
+}
+
+#[tauri::command]
+pub async fn get_item_body(
+    database: State<'_, Database>,
+    input: Option<serde_json::Value>,
+) -> CommandResult<ItemBody> {
+    get_item_body_in(&database, parse_input(input)?).await
 }
 
 #[tauri::command]
@@ -118,6 +207,6 @@ pub fn archive_item(
 pub fn search_items(
     database: State<'_, Database>,
     input: Option<serde_json::Value>,
-) -> CommandResult<Vec<Item>> {
+) -> CommandResult<Vec<ItemSummary>> {
     search_items_in(&database, parse_input(input)?)
 }

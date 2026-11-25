@@ -3,7 +3,7 @@ use serde_json::Value;
 
 use crate::{
     commands::error::{CommandError, CommandResult},
-    domain::{ItemKind, ItemStatus},
+    domain::{ItemCursor, ItemKind, ItemPageQuery, ItemSort, ItemStatus},
 };
 
 const MAX_ID_LENGTH: usize = 128;
@@ -11,6 +11,8 @@ const MAX_SEARCH_LENGTH: usize = 512;
 const MAX_TAGS_PER_ITEM: usize = 100;
 const MAX_CAPTURE_LENGTH: usize = 16_384;
 const MAX_TOKEN_LENGTH: usize = 512;
+const DEFAULT_PAGE_SIZE: u32 = 50;
+const MAX_PAGE_SIZE: u32 = 200;
 
 pub(super) fn parse_input<T: DeserializeOwned>(input: Option<Value>) -> CommandResult<T> {
     let input = input.ok_or_else(|| CommandError::validation("input is required"))?;
@@ -73,6 +75,47 @@ impl UpdateItemInput {
         self.source = required_text("source", self.source, 4096)?;
         Ok(self)
     }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListItemsPageInput {
+    pub status: Option<ItemStatus>,
+    pub kind: Option<ItemKind>,
+    pub sort: Option<ItemSort>,
+    pub cursor: Option<String>,
+    pub limit: Option<u32>,
+}
+
+impl ListItemsPageInput {
+    pub(super) fn into_query(self) -> CommandResult<ItemPageQuery> {
+        let limit = self.limit.unwrap_or(DEFAULT_PAGE_SIZE);
+        if limit == 0 || limit > MAX_PAGE_SIZE {
+            return Err(CommandError::validation(format!(
+                "limit must be between 1 and {MAX_PAGE_SIZE}"
+            )));
+        }
+        let cursor =
+            match self.cursor.as_deref().map(str::trim) {
+                Some(raw) if !raw.is_empty() => Some(ItemCursor::parse(raw).ok_or_else(|| {
+                    CommandError::validation("cursor is invalid, reload the list")
+                })?),
+                _ => None,
+            };
+        Ok(ItemPageQuery {
+            status: self.status,
+            kind: self.kind,
+            sort: self.sort.unwrap_or(ItemSort::Updated),
+            cursor,
+            limit,
+        })
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CountItemsInput {
+    pub kind: Option<ItemKind>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -50,51 +50,59 @@ impl GithubEventRepository {
         })
     }
 
-    pub fn insert_with_item(&self, event: &NewGithubEvent, item: NewItem) -> DbResult<bool> {
-        if event.repo_id.trim().is_empty() || event.source_event_id.trim().is_empty() {
-            return Err(DbError::InvalidData(
-                "GitHub event repository and source identifiers cannot be empty".into(),
-            ));
-        }
-        if item.source.trim().is_empty() {
-            return Err(DbError::InvalidData("item source cannot be empty".into()));
-        }
-        serde_json::from_str::<serde_json::Value>(&event.payload_json)
-            .map_err(|error| DbError::InvalidData(format!("invalid GitHub event JSON: {error}")))?;
-
-        let event_id = Uuid::new_v4().to_string();
-        let item_id = Uuid::new_v4().to_string();
-        self.database.with_transaction(|transaction| {
-            let changed = transaction.execute(
-                "INSERT INTO github_events(id, repo_id, source_event_id, event_type, payload_json, occurred_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                 ON CONFLICT(repo_id, source_event_id) DO NOTHING",
-                params![
-                    event_id,
-                    event.repo_id,
-                    event.source_event_id,
-                    event.event_type.as_str(),
-                    event.payload_json,
-                    event.occurred_at
-                ],
-            )?;
-            if changed == 0 {
-                return Ok(false);
+    /// 单仓库一次同步的全部写入合并进一个事务：
+    /// 事件去重、条目落库、正文只写一份，失败时整批回滚。
+    pub fn insert_with_items(&self, entries: &[(NewGithubEvent, NewItem)]) -> DbResult<usize> {
+        for (event, item) in entries {
+            if event.repo_id.trim().is_empty() || event.source_event_id.trim().is_empty() {
+                return Err(DbError::InvalidData(
+                    "GitHub event repository and source identifiers cannot be empty".into(),
+                ));
             }
-            transaction.execute(
-                "INSERT INTO items(id, kind, source, url, title, summary, note)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![
-                    item_id,
-                    item.kind.as_str(),
-                    item.source,
-                    item.url,
-                    item.title,
-                    item.summary,
-                    item.note
-                ],
-            )?;
-            Ok(true)
+            if item.source.trim().is_empty() {
+                return Err(DbError::InvalidData("item source cannot be empty".into()));
+            }
+            serde_json::from_str::<serde_json::Value>(&event.payload_json).map_err(|error| {
+                DbError::InvalidData(format!("invalid GitHub event JSON: {error}"))
+            })?;
+        }
+
+        self.database.with_transaction(|transaction| {
+            let mut inserted = 0;
+            for (event, item) in entries {
+                let changed = transaction.execute(
+                    "INSERT INTO github_events(id, repo_id, source_event_id, event_type, payload_json, occurred_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                     ON CONFLICT(repo_id, source_event_id) DO NOTHING",
+                    params![
+                        Uuid::new_v4().to_string(),
+                        event.repo_id,
+                        event.source_event_id,
+                        event.event_type.as_str(),
+                        event.payload_json,
+                        event.occurred_at
+                    ],
+                )?;
+                if changed == 0 {
+                    continue;
+                }
+                transaction.execute(
+                    "INSERT INTO items(id, kind, source, url, title, summary, note, body)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    params![
+                        Uuid::new_v4().to_string(),
+                        item.kind.as_str(),
+                        item.source,
+                        item.url,
+                        item.title,
+                        item.summary,
+                        item.note,
+                        item.body
+                    ],
+                )?;
+                inserted += 1;
+            }
+            Ok(inserted)
         })
     }
 

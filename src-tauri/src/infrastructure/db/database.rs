@@ -17,11 +17,18 @@ struct Migration {
     sql: &'static str,
 }
 
-const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "initial_schema",
-    sql: include_str!("../../../migrations/0001_initial.sql"),
-}];
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "initial_schema",
+        sql: include_str!("../../../migrations/0001_initial.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "item_body",
+        sql: include_str!("../../../migrations/0002_item_body.sql"),
+    },
+];
 
 #[derive(Clone)]
 pub struct Database {

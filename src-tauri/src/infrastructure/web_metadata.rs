@@ -13,6 +13,8 @@ use scraper::{Html, Selector};
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_RESPONSE_BYTES: usize = 512 * 1024;
+/// 回源正文的字符上限，避免把整页导航也塞进详情面板。
+const MAX_BODY_CHARS: usize = 20_000;
 
 #[derive(Debug, Default)]
 pub(crate) struct WebMetadata {
@@ -22,6 +24,17 @@ pub(crate) struct WebMetadata {
 }
 
 pub(crate) async fn fetch_web_metadata(url: &Url) -> Option<WebMetadata> {
+    let (html, final_url) = fetch_html(url).await?;
+    Some(extract_metadata(&html, &final_url))
+}
+
+/// 详情按需加载用的正文回源：只取纯文本，不渲染 HTML。
+pub(crate) async fn fetch_web_text(url: &Url) -> Option<String> {
+    let (html, _) = fetch_html(url).await?;
+    extract_text(&html)
+}
+
+async fn fetch_html(url: &Url) -> Option<(String, Url)> {
     if !is_fetchable(url) {
         return None;
     }
@@ -75,8 +88,43 @@ pub(crate) async fn fetch_web_metadata(url: &Url) -> Option<WebMetadata> {
         body.extend_from_slice(&chunk);
     }
 
-    let html = String::from_utf8_lossy(&body);
-    Some(extract_metadata(&html, &final_url))
+    Some((String::from_utf8_lossy(&body).into_owned(), final_url))
+}
+
+/// 按「article → main → body」的优先级抽正文，只保留块级文本。
+fn extract_text(html: &str) -> Option<String> {
+    let document = Html::parse_document(html);
+    let block_selector = Selector::parse("h1, h2, h3, h4, p, li, blockquote, pre").ok()?;
+
+    let mut lines: Vec<String> = Vec::new();
+    for candidate in ["article", "main", "[role=\"main\"]", "body"] {
+        let Ok(root_selector) = Selector::parse(candidate) else {
+            continue;
+        };
+        let Some(root) = document.select(&root_selector).next() else {
+            continue;
+        };
+        for element in root.select(&block_selector) {
+            let collapsed = element
+                .text()
+                .collect::<String>()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            if !collapsed.is_empty() {
+                lines.push(collapsed);
+            }
+        }
+        if !lines.is_empty() {
+            break;
+        }
+    }
+
+    let text = lines.join("\n");
+    if text.is_empty() {
+        return None;
+    }
+    Some(text.chars().take(MAX_BODY_CHARS).collect())
 }
 
 fn extract_metadata(html: &str, base_url: &Url) -> WebMetadata {

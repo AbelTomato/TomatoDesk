@@ -101,35 +101,39 @@ impl GithubClient {
         name: &str,
         etag: Option<&str>,
     ) -> Result<GithubResponse<Vec<GithubRelease>>, GithubError> {
-        self.get_list(
-            &format!("/repos/{owner}/{name}/releases?per_page=100"),
-            etag,
-        )
-        .await
+        let url = endpoint(&format!("/repos/{owner}/{name}/releases?per_page=100"))?;
+        self.get_list(url, etag).await
     }
 
+    /// `state` 取 `open` 或 `all`；`since` 只带增量同步，GitHub 按 `updated_at` 过滤。
     pub async fn issues(
         &self,
         owner: &str,
         name: &str,
+        state: &str,
+        since: Option<&str>,
         etag: Option<&str>,
     ) -> Result<GithubResponse<Vec<GithubIssue>>, GithubError> {
-        self.get_list(
-            &format!(
-                "/repos/{owner}/{name}/issues?state=all&sort=updated&direction=desc&per_page=100"
-            ),
-            etag,
-        )
-        .await
+        let mut url = endpoint(&format!("/repos/{owner}/{name}/issues"))?;
+        {
+            let mut pairs = url.query_pairs_mut();
+            pairs.append_pair("state", state);
+            pairs.append_pair("sort", "updated");
+            pairs.append_pair("direction", "desc");
+            pairs.append_pair("per_page", "100");
+            if let Some(since) = since {
+                pairs.append_pair("since", since);
+            }
+        }
+        self.get_list(url, etag).await
     }
 
     async fn get_list<T: for<'de> Deserialize<'de>>(
         &self,
-        path: &str,
+        url: Url,
         etag: Option<&str>,
     ) -> Result<GithubResponse<Vec<T>>, GithubError> {
-        let mut url = Url::parse(&format!("{API_ROOT}{path}"))
-            .map_err(|error| GithubError::Request(error.to_string()))?;
+        let mut url = url;
         let mut values = Vec::new();
         let mut response_etag = None;
         let mut is_first_page = true;
@@ -224,6 +228,11 @@ impl GithubClient {
             not_modified: false,
         })
     }
+}
+
+fn endpoint(path: &str) -> Result<Url, GithubError> {
+    Url::parse(&format!("{API_ROOT}{path}"))
+        .map_err(|error| GithubError::Request(error.to_string()))
 }
 
 fn next_page_url(link_header: &str) -> Option<&str> {

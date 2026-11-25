@@ -4,16 +4,35 @@ use chrono::{SecondsFormat, Utc};
 use tauri::Emitter;
 
 use crate::{
-    domain::{GithubEventType, NewGithubEvent, NewItem, NewSyncRun, SyncRunStatus},
+    domain::{
+        GithubEventType, ItemKind, NewGithubEvent, NewItem, NewSyncRun, SyncRunStatus, excerpt,
+    },
     infrastructure::{db::Database, github::GithubClient, secrets},
 };
 
 const SYNC_SOURCE: &str = "github";
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct EndpointEtags {
-    releases: Option<String>,
-    issues: Option<String>,
+/// 增量同步只看未关闭内容；`Full` 是显式的「加载历史」，会拉全部状态且忽略游标。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncScope {
+    #[default]
+    Incremental,
+    Full,
+}
+
+impl SyncScope {
+    fn state(self) -> &'static str {
+        match self {
+            Self::Incremental => "open",
+            Self::Full => "all",
+        }
+    }
+
+    /// 只有增量同步带 `since` 游标；全量同步必须忽略它，否则拿不到历史数据。
+    fn uses_cursor(self) -> bool {
+        self == Self::Incremental
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -31,6 +50,7 @@ pub async fn sync_github_repo(
     database: &Database,
     repo_id: &str,
     token: &str,
+    scope: SyncScope,
 ) -> Result<SyncSummary, String> {
     let repo = database
         .github_repos()
@@ -46,7 +66,7 @@ pub async fn sync_github_repo(
         })
         .map_err(|error| error.to_string())?;
 
-    let result = sync_repo_contents(database, &repo, token).await;
+    let result = sync_repo_contents(database, &repo, token, scope).await;
     match result {
         Ok(summary) => {
             run.finished_at = Some(summary.synced_at.clone());
@@ -77,7 +97,7 @@ pub async fn sync_all_github_repos(database: &Database) -> Result<Vec<SyncSummar
     let mut summaries = Vec::new();
     let mut errors = Vec::new();
     for repo in repos.into_iter().filter(|repo| repo.enabled) {
-        match sync_github_repo(database, &repo.id, &token).await {
+        match sync_github_repo(database, &repo.id, &token, SyncScope::Incremental).await {
             Ok(summary) => summaries.push(summary),
             Err(error) => errors.push(format!("{}/{}：{error}", repo.owner, repo.name)),
         }
@@ -125,65 +145,62 @@ async fn sync_repo_contents(
     database: &Database,
     repo: &crate::domain::GithubRepo,
     token: &str,
+    scope: SyncScope,
 ) -> Result<SyncSummary, String> {
     let client = GithubClient::new(token.to_owned(), Duration::from_secs(20))
         .map_err(|error| error.to_string())?;
-    let endpoint_etags = repo
-        .etag
-        .as_deref()
-        .and_then(|value| serde_json::from_str::<EndpointEtags>(value).ok())
-        .unwrap_or(EndpointEtags {
-            releases: None,
-            issues: None,
-        });
+    // `since` 每次同步都会前进，同一 URL 的 ETag 无法复用，因此不再发条件请求；
+    // 增量本身已经把载荷压到「上次同步后更新过的内容」。
+    let since = scope
+        .uses_cursor()
+        .then(|| repo.last_synced_at.clone())
+        .flatten();
+
     let releases = client
-        .releases(&repo.owner, &repo.name, endpoint_etags.releases.as_deref())
+        .releases(&repo.owner, &repo.name, None)
         .await
         .map_err(|error| error.to_string())?;
-    let releases_etag = releases.etag.clone();
-    let releases_not_modified = releases.not_modified;
-    let releases_count = releases.value.len();
     let issues = client
-        .issues(&repo.owner, &repo.name, endpoint_etags.issues.as_deref())
+        .issues(
+            &repo.owner,
+            &repo.name,
+            scope.state(),
+            since.as_deref(),
+            None,
+        )
         .await
         .map_err(|error| error.to_string())?;
-    let issues_etag = issues.etag.clone();
-    let issues_not_modified = issues.not_modified;
+
+    let releases_count = releases.value.len();
     let issues_count = issues.value.len();
     let source = format!("github:{}/{}", repo.owner, repo.name);
-    let mut imported_count = 0;
+    let mut entries = Vec::with_capacity(releases_count + issues_count);
 
     for release in &releases.value {
-        let inserted = database
-            .github_events()
-            .insert_with_item(
-                &NewGithubEvent {
-                    repo_id: repo.id.clone(),
-                    source_event_id: format!("release:{}", release.id),
-                    event_type: GithubEventType::Release,
-                    payload_json: serde_json::to_string(release)
-                        .map_err(|error| error.to_string())?,
-                    occurred_at: release
-                        .published_at
-                        .clone()
-                        .unwrap_or_else(|| release.created_at.clone()),
-                },
-                NewItem {
-                    kind: crate::domain::ItemKind::Github,
-                    source: source.clone(),
-                    url: Some(release.html_url.clone()),
-                    title: Some(format!(
-                        "Release · {}",
-                        release.name.as_deref().unwrap_or(&release.tag_name)
-                    )),
-                    summary: release.body.clone(),
-                    note: Some(format!("GitHub release · {}", release.tag_name)),
-                },
-            )
-            .map_err(|error| error.to_string())?;
-        if inserted {
-            imported_count += 1;
-        }
+        entries.push((
+            NewGithubEvent {
+                repo_id: repo.id.clone(),
+                source_event_id: format!("release:{}", release.id),
+                event_type: GithubEventType::Release,
+                payload_json: payload_without_body(release)?,
+                occurred_at: release
+                    .published_at
+                    .clone()
+                    .unwrap_or_else(|| release.created_at.clone()),
+            },
+            NewItem {
+                kind: ItemKind::Github,
+                source: source.clone(),
+                url: Some(release.html_url.clone()),
+                title: Some(format!(
+                    "Release · {}",
+                    release.name.as_deref().unwrap_or(&release.tag_name)
+                )),
+                summary: release.body.as_deref().and_then(excerpt),
+                note: Some(format!("GitHub release · {}", release.tag_name)),
+                body: release.body.clone(),
+            },
+        ));
     }
 
     for issue in &issues.value {
@@ -197,42 +214,35 @@ async fn sync_repo_contents(
         } else {
             "Issue"
         };
-        let inserted = database
-            .github_events()
-            .insert_with_item(
-                &NewGithubEvent {
-                    repo_id: repo.id.clone(),
-                    source_event_id: format!("issue:{}:{}", issue.id, issue.updated_at),
-                    event_type,
-                    payload_json: serde_json::to_string(issue)
-                        .map_err(|error| error.to_string())?,
-                    occurred_at: issue.updated_at.clone(),
-                },
-                NewItem {
-                    kind: crate::domain::ItemKind::Github,
-                    source: source.clone(),
-                    url: Some(issue.html_url.clone()),
-                    title: Some(format!("{kind_label} · #{} {}", issue.number, issue.title)),
-                    summary: issue.body.clone(),
-                    note: Some(format!("GitHub {kind_label} · {}", issue.state)),
-                },
-            )
-            .map_err(|error| error.to_string())?;
-        if inserted {
-            imported_count += 1;
-        }
+        entries.push((
+            NewGithubEvent {
+                repo_id: repo.id.clone(),
+                source_event_id: format!("issue:{}:{}", issue.id, issue.updated_at),
+                event_type,
+                payload_json: payload_without_body(issue)?,
+                occurred_at: issue.updated_at.clone(),
+            },
+            NewItem {
+                kind: ItemKind::Github,
+                source: source.clone(),
+                url: Some(issue.html_url.clone()),
+                title: Some(format!("{kind_label} · #{} {}", issue.number, issue.title)),
+                summary: issue.body.as_deref().and_then(excerpt),
+                note: Some(format!("GitHub {kind_label} · {}", issue.state)),
+                body: issue.body.clone(),
+            },
+        ));
     }
+
+    // 单仓库一次同步的所有写入共用一个事务。
+    let imported_count = database
+        .github_events()
+        .insert_with_items(&entries)
+        .map_err(|error| error.to_string())?;
 
     let synced_at = now_iso();
     let mut updated_repo = repo.clone();
     updated_repo.last_synced_at = Some(synced_at.clone());
-    updated_repo.etag = Some(
-        serde_json::to_string(&EndpointEtags {
-            releases: releases_etag.or(endpoint_etags.releases),
-            issues: issues_etag.or(endpoint_etags.issues),
-        })
-        .map_err(|error| error.to_string())?,
-    );
     database
         .github_repos()
         .update(&updated_repo)
@@ -243,9 +253,19 @@ async fn sync_repo_contents(
         imported_count,
         releases_count,
         issues_count,
-        not_modified: releases_not_modified && issues_not_modified,
+        // 没有新增条目即视为「内容没有变化」，不依赖 304。
+        not_modified: imported_count == 0,
         synced_at,
     })
+}
+
+/// 事件载荷只留元信息：正文已经写进 `items.body`，不再重复存一份。
+fn payload_without_body<T: serde::Serialize>(value: &T) -> Result<String, String> {
+    let mut payload = serde_json::to_value(value).map_err(|error| error.to_string())?;
+    if let Some(object) = payload.as_object_mut() {
+        object.remove("body");
+    }
+    Ok(payload.to_string())
 }
 
 fn now_iso() -> String {

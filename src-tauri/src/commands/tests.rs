@@ -3,13 +3,13 @@ use serde_json::json;
 use crate::{
     commands::{
         dto::{
-            CreateItemInput, CreateTagInput, ItemIdInput, SearchItemsInput, SetItemTagsInput,
-            UpdateItemInput,
+            CountItemsInput, CreateItemInput, CreateTagInput, ItemIdInput, ListItemsPageInput,
+            SearchItemsInput, SetItemTagsInput, UpdateItemInput,
         },
         error::CommandErrorCode,
         items, tags,
     },
-    domain::{ItemKind, ItemStatus},
+    domain::{ItemKind, ItemSort, ItemStatus, ItemSummary},
     infrastructure::db::Database,
 };
 
@@ -40,10 +40,20 @@ fn item_commands_support_create_list_search_update_and_archive() {
         .unwrap(),
         created
     );
-    assert_eq!(
-        items::list_items_in(&database).unwrap(),
-        vec![created.clone()]
-    );
+    let page = items::list_items_page_in(
+        &database,
+        ListItemsPageInput {
+            status: None,
+            kind: None,
+            sort: None,
+            cursor: None,
+            limit: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(page.items, vec![ItemSummary::from(&created)]);
+    assert!(!page.has_more);
+    assert_eq!(page.next_cursor, None);
     assert_eq!(
         items::search_items_in(
             &database,
@@ -52,7 +62,7 @@ fn item_commands_support_create_list_search_update_and_archive() {
             }
         )
         .unwrap(),
-        vec![created.clone()]
+        vec![ItemSummary::from(&created)]
     );
 
     let updated = items::update_item_in(
@@ -211,4 +221,99 @@ fn request_dtos_reject_unknown_fields_and_missing_items_use_not_found_errors() {
     )
     .unwrap_err();
     assert_eq!(error.code, CommandErrorCode::NotFound);
+}
+
+#[test]
+fn item_pages_walk_with_keyset_cursors_and_counts_match_the_rows() {
+    let database = Database::in_memory().unwrap();
+    let mut created_ids = Vec::new();
+    for index in 0..5 {
+        let created = items::create_item_in(
+            &database,
+            CreateItemInput {
+                kind: ItemKind::Note,
+                source: "manual".into(),
+                url: None,
+                title: Some(format!("Item {index}")),
+                summary: None,
+                note: None,
+            },
+        )
+        .unwrap();
+        created_ids.push(created.id);
+    }
+
+    let mut collected = Vec::new();
+    let mut cursor = None;
+    let mut pages = 0;
+    loop {
+        let page = items::list_items_page_in(
+            &database,
+            ListItemsPageInput {
+                status: None,
+                kind: None,
+                sort: Some(ItemSort::Updated),
+                cursor: cursor.clone(),
+                limit: Some(2),
+            },
+        )
+        .unwrap();
+        pages += 1;
+        collected.extend(page.items.into_iter().map(|item| item.id));
+        match page.next_cursor {
+            Some(next) if page.has_more => cursor = Some(next),
+            _ => break,
+        }
+    }
+
+    assert_eq!(pages, 3);
+    assert_eq!(collected.len(), 5);
+    let mut unique = collected.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), 5);
+
+    let counts = items::count_items_in(&database, CountItemsInput::default()).unwrap();
+    assert_eq!(counts.all, 5);
+    assert_eq!(counts.pending, 5);
+    assert_eq!(counts.processed, 0);
+    assert_eq!(counts.archived, 0);
+    assert_eq!(
+        created_ids.len(),
+        counts.all as usize,
+        "created rows and counted rows should agree"
+    );
+}
+
+#[test]
+fn item_pages_reject_invalid_cursors_and_out_of_range_limits() {
+    let database = Database::in_memory().unwrap();
+
+    let error = items::list_items_page_in(
+        &database,
+        ListItemsPageInput {
+            status: None,
+            kind: None,
+            sort: None,
+            cursor: Some("not-a-cursor".into()),
+            limit: None,
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.code, CommandErrorCode::Validation);
+
+    for limit in [0, 201] {
+        let error = items::list_items_page_in(
+            &database,
+            ListItemsPageInput {
+                status: None,
+                kind: None,
+                sort: None,
+                cursor: None,
+                limit: Some(limit),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.code, CommandErrorCode::Validation);
+    }
 }

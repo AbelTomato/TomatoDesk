@@ -23,6 +23,7 @@ pub(crate) async fn capture_clipboard_content(
             title: metadata.title,
             summary: metadata.description,
             note,
+            body: None,
         });
     }
 
@@ -33,6 +34,7 @@ pub(crate) async fn capture_clipboard_content(
         title: None,
         summary: None,
         note: Some(value),
+        body: None,
     })
 }
 
