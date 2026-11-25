@@ -1,6 +1,6 @@
 # 实施计划：应用内自动更新与签名
 
-- 状态：实施完成，待真机升级验证
+- 状态：v0.2.0 已发布，待真机升级验证
 - 创建日期：2026-11-25
 - 最后更新：2026-11-25
 - 负责人：Codex
@@ -92,3 +92,6 @@
 - 2026-11-25 09:55：本地 `windows-cargo.ps1 check` 因共享 target 缺少 `libsqlite3-sys` 的 `bindgen.rs` 失败（2026-11-24 已记录的既有问题），命令随后被沙箱策略拦截，未继续重试；Rust 校验改由干净 target 或 CI 完成。
 - 2026-11-25 10:12：改用 `%TEMP%\TomatoDesk\cargo-target-check` 干净 target 重跑，`cargo fmt --check`、`clippy --locked --all-targets` 通过（仅保留既有测试建议），`cargo test --locked` 9/9 通过。
 - 2026-11-25 10:36：清掉共享 target 中损坏的 `libsqlite3-sys` 构建缓存后完成 release 打包。实测 v2 的 NSIS 只产出 `setup.exe` 与 `setup.exe.sig`，没有 `.nsis.zip`，据此把 `build-installer.ps1`、`generate-latest-json.ps1` 与 release 校验改为指向安装包本身；重跑成功，`latest.json` 的 `url`、`signature` 与产物一致。
+- 2026-11-25 11:55：改动拆为三个提交（`0c8b3b4` feat、`d2a57bc` ci、`8b269be` docs），版本号三处升到 `0.2.0` 并以 `eb256e3` 提交发布说明，推送 `main`。
+- 2026-11-25 12:00：`eb256e3` 的 CI 通过；打注释标签 `v0.2.0` 并推送，Release workflow 完成。
+- 2026-11-25 12:20：校验已发布资产：`latest.json` 返回 200 且版本为 `0.2.0`；`setup.exe` 的 SHA-256 与 `.exe.sha256` 一致；`.exe.sig` 与 `latest.json` 中的 `signature` 逐字相同；`manifest.json` 记录 `sourceCommit=eb256e3`、`workingTreeDirty=false`。
