@@ -15,8 +15,16 @@ pnpm install
 pnpm dev
 pnpm build
 pnpm lint
+pnpm check:design
 pnpm tauri dev
 ```
+
+- `pnpm check:design`：扫描 `src/`，检查旧色板 token、硬编码白色文字、彩色填充底，以及 `backdrop-blur` 是否只出现在浮层组件。规范见 `docs/design/design-language.md`。
+- 开发模式下可用 URL 参数单独预览界面，不需要启动 Tauri 窗口：
+  - `?styleguide`：设计基座（色板、排版、组件）。
+  - `?preview&view=inbox|repos|search|settings`：用 `src/features/dev/fixtures.ts` 的假数据渲染页面，`&repo=<id>` 直接进仓库详情，`&thread=<id>` 直接开该仓库下的 PR / Issue 详情页。
+  - `?capture`：快速收集窗口。
+  - `?preview` 与 fixtures 只在 `import.meta.env.DEV` 下生效，生产构建会被摇掉。
 
 工程进度和验证记录见 `docs/execution-plans/` 与 `docs/development-logs/`。
 

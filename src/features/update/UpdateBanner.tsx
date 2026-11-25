@@ -183,12 +183,9 @@ function UpdateBanner() {
 
   if (phase === "idle") return null;
 
+  // 横幅与提示条同一套规则：中性底 + 左侧 2px 强调条，不做整块彩色底。
   const tone =
-    phase === "error"
-      ? "border-destructive/30 bg-destructive/10"
-      : phase === "current"
-        ? "border-border bg-card"
-        : "border-link/30 bg-link/10";
+    phase === "error" ? "callout-error" : phase === "current" ? "callout" : "callout-info";
 
   const title =
     phase === "checking"
@@ -221,24 +218,28 @@ function UpdateBanner() {
                 : (message ?? "更新过程出现未知错误。");
 
   const primaryClass =
-    "rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground transition hover:bg-primary/90 disabled:opacity-50";
+    "h-8 rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground transition hover:bg-primary/90 disabled:opacity-50";
   const secondaryClass =
-    "rounded-md border border-border bg-card px-3 py-2 text-sm font-medium text-foreground/80 hover:bg-background disabled:opacity-50";
+    "h-8 rounded-lg border border-border px-3 text-sm text-muted-foreground transition hover:bg-accent hover:text-foreground disabled:opacity-50";
 
   return (
-    <section className={`border-b px-5 py-3 sm:px-7 ${tone}`} aria-live="polite" role="status">
+    <section
+      className={`callout border-b border-border px-5 py-3 sm:px-7 ${tone}`}
+      aria-live="polite"
+      role="status"
+    >
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div className="min-w-0">
           <p
-            className={`text-sm font-semibold ${phase === "error" ? "text-destructive" : phase === "current" ? "text-foreground" : "text-link"}`}
+            className={`text-sm font-medium ${phase === "error" ? "text-destructive" : phase === "current" ? "text-foreground" : "text-link"}`}
           >
             {title}
           </p>
-          <p className="mt-1 text-xs leading-5 text-foreground/80">{hint}</p>
+          <p className="mt-1 text-sm leading-5 text-muted-foreground">{hint}</p>
 
           {notes && (phase === "available" || phase === "ready") ? (
             <details className="mt-2 max-w-2xl">
-              <summary className="cursor-pointer text-xs font-semibold text-foreground/80">
+              <summary className="cursor-pointer text-xs font-medium text-foreground">
                 更新说明
               </summary>
               <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-card p-3 text-xs leading-5 text-foreground/80">
@@ -255,7 +256,7 @@ function UpdateBanner() {
                   style={{ width: `${percent}%` }}
                 />
               </div>
-              <p className="mt-1 text-[11px] text-muted-foreground">
+              <p className="mt-1 font-mono text-xs text-muted-foreground">
                 {total > 0
                   ? `${formatBytes(received)} / ${formatBytes(total)} · ${percent}%`
                   : `${formatBytes(received)} 已下载`}

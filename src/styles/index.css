@@ -43,6 +43,15 @@
   --success: oklch(0.72 0.15 155);
   --warning: oklch(0.79 0.14 82);
   --link: #60a5fa;
+
+  /*
+   * 状态色例外：只用于 GitHub 线程状态条与小号状态文字。
+   * 其余场景一律中性，避免彩色铺满界面。
+   */
+  --state-open: oklch(0.72 0.15 155);
+  --state-merged: oklch(0.68 0.16 300);
+  --state-closed: oklch(0.68 0.17 25);
+
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);
@@ -71,7 +80,12 @@
     --destructive: oklch(0.577 0.245 27.325);
     --success: oklch(0.52 0.13 155);
     --warning: oklch(0.56 0.12 75);
-    --link: #3b82f6;
+    --link: #2563eb;
+
+    --state-open: oklch(0.55 0.13 155);
+    --state-merged: oklch(0.5 0.18 300);
+    --state-closed: oklch(0.55 0.2 27);
+
     --border: oklch(0.922 0 0);
     --input: oklch(0.922 0 0);
     --ring: oklch(0.708 0 0);
@@ -100,6 +114,9 @@
   --color-success: var(--success);
   --color-warning: var(--warning);
   --color-link: var(--link);
+  --color-state-open: var(--state-open);
+  --color-state-merged: var(--state-merged);
+  --color-state-closed: var(--state-closed);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
@@ -114,11 +131,39 @@
   --spacing-panel: 22rem;
 }
 
+@layer components {
+  /*
+   * 提示条：中性底 + 左侧 2px 强调条。
+   * 语义色只出现在这一条竖线上，文字颜色由使用处按需指定。
+   * 用组件类而不是拼 `border-l-2 border-l-*`，避免与 Tailwind 的
+   * `border-*` 颜色简写互相覆盖。
+   */
+  .callout {
+    border-left: 2px solid var(--border);
+    background: var(--card);
+  }
+
+  .callout-info {
+    border-left-color: var(--link);
+  }
+
+  .callout-success {
+    border-left-color: var(--success);
+  }
+
+  .callout-warning {
+    border-left-color: var(--warning);
+  }
+
+  .callout-error {
+    border-left-color: var(--destructive);
+  }
+}
+
 @layer base {
   * {
     border-color: var(--border);
   }
-
   html {
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;

@@ -3,6 +3,7 @@ import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
+import { Button, ListItem, ListItemMeta, ListItemTitle, Tabs, cn } from "../../components/ui";
 import {
   countItemsByStatus,
   createTag,
@@ -33,17 +34,19 @@ const SEARCH_LIMIT = 100;
 
 const emptyCounts: ItemStatusCounts = { all: 0, pending: 0, processed: 0, archived: 0 };
 
-const statusMeta: Record<ItemStatus, { label: string; tone: string }> = {
-  pending: { label: "待处理", tone: "bg-muted text-foreground" },
-  processed: { label: "已处理", tone: "bg-success/10 text-success" },
-  archived: { label: "已归档", tone: "bg-muted text-muted-foreground" },
+const statusLabels: Record<ItemStatus, string> = {
+  pending: "待处理",
+  processed: "已处理",
+  archived: "已归档",
 };
 
-const kindMeta: Record<ItemKind, { label: string; tone: string }> = {
-  note: { label: "笔记", tone: "bg-muted text-muted-foreground" },
-  link: { label: "链接", tone: "bg-muted text-muted-foreground" },
-  github: { label: "GitHub", tone: "bg-muted text-muted-foreground" },
+const kindLabels: Record<ItemKind, string> = {
+  note: "笔记",
+  link: "链接",
+  github: "GitHub",
 };
+
+const statusOrder: ItemStatus[] = ["pending", "processed", "archived"];
 
 function getItemLabel(item: ItemSummary) {
   return item.title?.trim() || item.summary?.trim() || item.note?.trim() || item.source;
@@ -345,15 +348,29 @@ function Inbox() {
     }
   }
 
+  const statusTabs = useMemo(
+    () => [
+      { id: "all", label: "全部", count: counts.all },
+      ...statusOrder.map((status) => ({
+        id: status,
+        label: statusLabels[status],
+        count: counts[status],
+      })),
+    ],
+    [counts],
+  );
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className="border-b border-border bg-card px-5 py-5 sm:px-7">
-        <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-          <div>
-            <p className="text-sm text-muted-foreground">Inbox</p>
-            <h2 className="mt-1 text-2xl font-bold tracking-tight">个人收集</h2>
+      <header className="px-5 pt-4 sm:px-7">
+        <div className="flex flex-wrap items-baseline justify-between gap-3">
+          <div className="flex items-baseline gap-3">
+            <h2 className="text-lg font-bold tracking-tight">个人收集</h2>
+            <span className="font-mono text-xs text-muted-foreground">
+              待处理 {counts.pending} / 共 {counts.all}
+            </span>
           </div>
-          <div className="flex min-w-0 flex-1 gap-2 xl:max-w-2xl">
+          <div className="flex min-w-0 flex-1 items-center justify-end gap-2 sm:max-w-md">
             <label className="relative min-w-0 flex-1">
               <span className="sr-only">搜索标题、正文和来源</span>
               <input
@@ -364,78 +381,68 @@ function Inbox() {
                 placeholder="搜索标题、正文和来源"
                 onChange={(event) => setQuery(event.target.value)}
               />
-              <kbd className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 rounded border border-border bg-card px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+              <kbd className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 rounded border border-border px-1.5 py-0.5 font-mono text-xs text-muted-foreground">
                 Ctrl K
               </kbd>
             </label>
-            <button
-              className="h-8 shrink-0 rounded-lg border border-border px-3 text-sm text-foreground/80 transition hover:bg-muted"
-              type="button"
-              onClick={() => void loadFirstPage()}
-            >
+            <Button variant="ghost" size="sm" onClick={() => void loadFirstPage()}>
               刷新
-            </button>
+            </Button>
           </div>
         </div>
 
-        <div className="mt-5 flex flex-wrap items-center gap-2">
-          {(["all", "pending", "processed", "archived"] as const).map((status) => (
-            <button
-              key={status}
-              className={`h-7 rounded-md px-2.5 font-mono text-xs transition ${statusFilter === status ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground"}`}
-              type="button"
-              onClick={() => setStatusFilter(status)}
-            >
-              {status === "all" ? "全部" : statusMeta[status].label} {counts[status]}
-            </button>
-          ))}
-          <span className="mx-1 hidden h-5 w-px bg-border sm:block" />
-          <select
-            className="h-7 rounded-md border border-input bg-transparent px-2 text-xs text-foreground/80 outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
-            value={kindFilter}
-            onChange={(event) => setKindFilter(event.target.value as KindFilter)}
-          >
-            <option value="all">全部类型</option>
-            <option value="note">笔记</option>
-            <option value="link">链接</option>
-          </select>
-          <select
-            className="h-7 rounded-md border border-input bg-transparent px-2 text-xs text-foreground/80 outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
-            value={sortOrder}
-            onChange={(event) => setSortOrder(event.target.value as ItemSort)}
-          >
-            <option value="updated">最近更新</option>
-            <option value="created">最近创建</option>
-          </select>
+        <div className="mt-3">
+          <Tabs
+            items={statusTabs}
+            value={statusFilter}
+            onChange={(id) => setStatusFilter(id as StatusFilter)}
+            trailing={
+              <>
+                <select
+                  className="h-7 rounded-md bg-transparent px-1.5 font-mono text-xs text-muted-foreground outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
+                  value={kindFilter}
+                  onChange={(event) => setKindFilter(event.target.value as KindFilter)}
+                >
+                  <option value="all">全部类型</option>
+                  <option value="note">笔记</option>
+                  <option value="link">链接</option>
+                </select>
+                <span aria-hidden className="h-4 w-px bg-border" />
+                <select
+                  className="h-7 rounded-md bg-transparent px-1.5 font-mono text-xs text-muted-foreground outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
+                  value={sortOrder}
+                  onChange={(event) => setSortOrder(event.target.value as ItemSort)}
+                >
+                  <option value="updated">最近更新</option>
+                  <option value="created">最近创建</option>
+                </select>
+              </>
+            }
+          />
         </div>
       </header>
 
       <div className="grid min-h-0 flex-1 lg:grid-cols-[minmax(18rem,0.9fr)_minmax(22rem,1.1fr)]">
         <section
-          className="min-h-72 border-b border-border bg-background p-4 sm:p-5 lg:border-r lg:border-b-0"
+          className="min-h-72 overflow-y-auto border-b border-border lg:border-r lg:border-b-0"
           aria-label="Inbox 列表"
           aria-busy={initialLoading}
         >
           {initialLoading ? (
-            <div className="space-y-2" role="status" aria-label="正在加载">
-              {Array.from({ length: 5 }).map((_, index) => (
-                <div
-                  key={index}
-                  className="rounded-lg border border-border bg-card p-4"
-                  aria-hidden
-                >
-                  <div className="h-4 w-3/5 animate-pulse rounded bg-muted" />
-                  <div className="mt-2 h-3 w-full animate-pulse rounded bg-muted/70" />
-                  <div className="mt-3 h-3 w-1/3 animate-pulse rounded bg-muted/70" />
+            <div className="divide-y divide-border" role="status" aria-label="正在加载">
+              {Array.from({ length: 6 }).map((_, index) => (
+                <div key={index} className="space-y-2 px-4 py-3" aria-hidden>
+                  <div className="h-3.5 w-3/5 animate-pulse rounded bg-muted" />
+                  <div className="h-3 w-4/5 animate-pulse rounded bg-muted/70" />
                 </div>
               ))}
             </div>
           ) : null}
           {!initialLoading && error ? (
-            <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-5 text-sm text-destructive">
+            <div className="m-4 callout callout-error px-4 py-3 text-sm text-destructive">
               <p>{error}</p>
               <button
-                className="mt-3 font-medium underline"
+                className="mt-2 text-xs font-medium underline"
                 type="button"
                 onClick={() => void loadFirstPage()}
               >
@@ -444,123 +451,87 @@ function Inbox() {
             </div>
           ) : null}
           {!initialLoading && !error && visibleItems.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-border bg-card p-8 text-center">
-              <p className="text-sm font-medium text-foreground/80">
-                {searching ? "没有匹配的内容" : "Inbox 还是空的"}
+            <div className="px-4 py-10 text-center">
+              <p className="text-sm text-foreground">
+                {searching ? "没有匹配的内容" : "还没有收集"}
               </p>
-              <p className="mt-2 text-sm leading-6 text-muted-foreground">
+              <p className="mt-1 text-sm text-muted-foreground">
                 {searching
                   ? "换一个关键词，或清除搜索条件。"
-                  : "按 Ctrl + Shift + Space 开始快速收集。"}
+                  : "按 Ctrl + Shift + Space 开始收集。"}
               </p>
             </div>
           ) : null}
-          <div className="space-y-2">
-            {visibleItems.map((item) => {
-              const active = item.id === selectedId;
-              return (
-                <button
-                  key={item.id}
-                  className={`block w-full rounded-lg border p-4 text-left transition ${active ? "border-link/60 bg-card" : "border-border bg-card hover:border-foreground/30"}`}
-                  type="button"
-                  aria-current={active ? "true" : undefined}
-                  onClick={() => setSelectedId(item.id)}
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <span className="line-clamp-2 min-w-0 text-sm leading-5 font-medium">
-                      {getItemLabel(item)}
-                    </span>
-                    <span
-                      className={`shrink-0 rounded px-1.5 py-0.5 font-mono text-[10px] tracking-wider uppercase ${kindMeta[item.kind].tone}`}
-                    >
-                      {kindMeta[item.kind].label}
-                    </span>
-                  </div>
-                  <p className="mt-2 line-clamp-2 text-xs leading-5 text-muted-foreground">
-                    {describeItem(item)}
-                  </p>
-                  <div className="mt-3 flex items-center justify-between gap-3">
-                    <span
-                      className={`rounded px-1.5 py-0.5 font-mono text-[10px] tracking-wider uppercase ${statusMeta[item.status].tone}`}
-                    >
-                      {statusMeta[item.status].label}
-                    </span>
-                    <time
-                      className="font-mono text-[11px] text-muted-foreground"
-                      dateTime={item.updatedAt}
-                    >
-                      {formatDate(item.updatedAt)}
-                    </time>
-                  </div>
-                </button>
-              );
-            })}
+
+          <div className="divide-y divide-border">
+            {visibleItems.map((item) => (
+              <ListItem
+                key={item.id}
+                active={item.id === selectedId}
+                flush
+                className="px-4 py-3"
+                aria-current={item.id === selectedId ? "true" : undefined}
+                onClick={() => setSelectedId(item.id)}
+              >
+                <ListItemTitle>{getItemLabel(item)}</ListItemTitle>
+                <p className="line-clamp-1 text-sm text-muted-foreground">{describeItem(item)}</p>
+                <ListItemMeta>
+                  <span>{kindLabels[item.kind]}</span>
+                  <span>{statusLabels[item.status]}</span>
+                  <time className="ml-auto" dateTime={item.updatedAt}>
+                    {formatDate(item.updatedAt)}
+                  </time>
+                </ListItemMeta>
+              </ListItem>
+            ))}
           </div>
 
           {!initialLoading && !error ? (
-            <div ref={sentinelRef} className="mt-3 flex justify-center pb-2">
+            <div ref={sentinelRef} className="flex justify-center px-4 py-4">
               {searching ? (
-                <span className="font-mono text-[11px] text-muted-foreground">
+                <span className="font-mono text-xs text-muted-foreground">
                   搜索结果最多 {SEARCH_LIMIT} 条
                 </span>
               ) : loadingMore ? (
-                <span className="font-mono text-[11px] text-muted-foreground">正在加载更多…</span>
+                <span className="font-mono text-xs text-muted-foreground">正在加载更多…</span>
               ) : hasMore ? (
-                <button
-                  className="h-8 rounded-lg border border-border px-3 text-xs text-foreground/80 transition hover:bg-muted"
-                  type="button"
-                  onClick={() => void loadMore()}
-                >
+                <Button variant="outline" size="sm" onClick={() => void loadMore()}>
                   加载更多
-                </button>
+                </Button>
               ) : visibleItems.length > 0 ? (
-                <span className="font-mono text-[11px] text-muted-foreground">已显示全部</span>
+                <span className="font-mono text-xs text-muted-foreground">已显示全部</span>
               ) : null}
             </div>
           ) : null}
         </section>
 
-        <section className="min-w-0 bg-card p-5 sm:p-7" aria-label="Item 详情">
+        <section
+          className="min-w-0 overflow-y-auto bg-card px-5 py-6 sm:px-7"
+          aria-label="Item 详情"
+        >
           {selectedItem ? (
             <div className="mx-auto max-w-2xl">
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span
-                      className={`rounded px-1.5 py-0.5 font-mono text-[10px] tracking-wider uppercase ${kindMeta[selectedItem.kind].tone}`}
-                    >
-                      {kindMeta[selectedItem.kind].label}
-                    </span>
-                    <span
-                      className={`rounded px-1.5 py-0.5 font-mono text-[10px] tracking-wider uppercase ${statusMeta[selectedItem.status].tone}`}
-                    >
-                      {statusMeta[selectedItem.status].label}
-                    </span>
-                  </div>
-                  <h3 className="mt-4 text-2xl leading-tight font-bold tracking-tight break-words">
+                  <h3 className="text-xl leading-snug font-bold tracking-tight break-words">
                     {getItemLabel(selectedItem)}
                   </h3>
-                  <p className="mt-2 font-mono text-xs text-muted-foreground">
-                    更新于 {formatDate(selectedItem.updatedAt)} · 创建于{" "}
+                  <p className="mt-1 font-mono text-xs text-muted-foreground">
+                    {kindLabels[selectedItem.kind]} · {statusLabels[selectedItem.status]} · 更新于{" "}
+                    {formatDate(selectedItem.updatedAt)} · 创建于{" "}
                     {formatDate(selectedItem.createdAt)}
                   </p>
                 </div>
                 {selectedItem.url ? (
-                  <button
-                    className="h-8 shrink-0 rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground transition hover:bg-primary/90 active:translate-y-px"
-                    type="button"
-                    onClick={() => void openSelectedLink()}
-                  >
+                  <Button size="sm" onClick={() => void openSelectedLink()}>
                     打开原链接
-                  </button>
+                  </Button>
                 ) : null}
               </div>
 
-              <div className="mt-7 space-y-5">
+              <div className="mt-6 space-y-5">
                 <div>
-                  <p className="font-mono text-[10px] tracking-wider text-muted-foreground uppercase">
-                    正文
-                  </p>
+                  <p className="text-xs font-medium text-muted-foreground">正文</p>
                   {bodyLoading ? (
                     <div className="mt-2 space-y-2" role="status" aria-label="正在加载正文">
                       {Array.from({ length: 3 }).map((_, index) => (
@@ -574,9 +545,7 @@ function Inbox() {
                   ) : bodyError ? (
                     <p className="mt-2 text-sm text-destructive">{bodyError}</p>
                   ) : detailBody?.body?.trim() ? (
-                    <p className="mt-2 text-sm leading-7 whitespace-pre-wrap text-foreground/80">
-                      {detailBody.body}
-                    </p>
+                    <p className="mt-2 text-sm leading-7 whitespace-pre-wrap">{detailBody.body}</p>
                   ) : (
                     <p className="mt-2 text-sm text-muted-foreground">
                       {selectedItem.kind === "link"
@@ -588,76 +557,77 @@ function Inbox() {
 
                 {selectedItem.url ? (
                   <div>
-                    <p className="font-mono text-[10px] tracking-wider text-muted-foreground uppercase">
-                      URL
-                    </p>
-                    <p className="mt-2 rounded-md bg-background px-3 py-2 font-mono text-xs break-all text-foreground/80">
+                    <p className="text-xs font-medium text-muted-foreground">URL</p>
+                    <p className="mt-2 rounded-md bg-background px-3 py-2 font-mono text-xs break-all text-muted-foreground">
                       {selectedItem.url}
                     </p>
                   </div>
                 ) : null}
                 {selectedItem.summary ? (
                   <div>
-                    <p className="font-mono text-[10px] tracking-wider text-muted-foreground uppercase">
-                      摘要
-                    </p>
-                    <p className="mt-2 text-sm leading-7 whitespace-pre-wrap text-foreground/80">
+                    <p className="text-xs font-medium text-muted-foreground">摘要</p>
+                    <p className="mt-2 text-sm leading-7 whitespace-pre-wrap">
                       {selectedItem.summary}
                     </p>
                   </div>
                 ) : null}
                 {selectedItem.note ? (
                   <div>
-                    <p className="font-mono text-[10px] tracking-wider text-muted-foreground uppercase">
-                      备注
-                    </p>
-                    <p className="mt-2 rounded-md bg-background px-3 py-3 text-sm leading-7 whitespace-pre-wrap text-foreground/80">
+                    <p className="text-xs font-medium text-muted-foreground">备注</p>
+                    <p className="mt-2 rounded-md bg-background px-3 py-2.5 text-sm leading-7 whitespace-pre-wrap">
                       {selectedItem.note}
                     </p>
                   </div>
                 ) : null}
                 <div>
-                  <p className="font-mono text-[10px] tracking-wider text-muted-foreground uppercase">
-                    来源
-                  </p>
-                  <p className="mt-2 text-sm text-foreground/80">{selectedItem.source}</p>
+                  <p className="text-xs font-medium text-muted-foreground">来源</p>
+                  <p className="mt-2 font-mono text-xs">{selectedItem.source}</p>
                 </div>
               </div>
 
-              <div className="mt-8 border-t border-border pt-6">
-                <p className="text-sm font-medium">处理状态</p>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {(["pending", "processed", "archived"] as const).map((status) => (
-                    <button
+              <div className="mt-8 border-t border-border pt-5">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-xs font-medium text-muted-foreground">处理状态</p>
+                  {mutating ? (
+                    <span className="font-mono text-xs text-muted-foreground">保存中…</span>
+                  ) : null}
+                </div>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {statusOrder.map((status) => (
+                    <Button
                       key={status}
-                      className={`h-8 rounded-lg border px-3 text-sm font-medium transition ${selectedItem.status === status ? "border-primary bg-primary text-primary-foreground" : "border-border text-foreground/80 hover:border-foreground/30"}`}
-                      type="button"
+                      size="sm"
+                      variant={selectedItem.status === status ? "default" : "outline"}
                       disabled={mutating}
                       onClick={() => void changeStatus(status)}
                     >
-                      {statusMeta[status].label}
-                    </button>
+                      {statusLabels[status]}
+                    </Button>
                   ))}
                 </div>
               </div>
 
-              <div className="mt-8 border-t border-border pt-6">
+              <div className="mt-6 border-t border-border pt-5">
                 <div className="flex items-center justify-between gap-3">
-                  <p className="text-sm font-medium">标签</p>
-                  <span className="font-mono text-[11px] text-muted-foreground">点击切换</span>
+                  <p className="text-xs font-medium text-muted-foreground">标签</p>
+                  <span className="font-mono text-xs text-muted-foreground">点击切换</span>
                 </div>
-                <div className="mt-3 flex flex-wrap gap-2">
+                <div className="mt-2 flex flex-wrap gap-1.5">
                   {tags.map((tag) => {
                     const active = selectedTags.some((selectedTag) => selectedTag.id === tag.id);
                     return (
                       <button
                         key={tag.id}
-                        className={`h-7 rounded-md border px-2.5 font-mono text-xs transition ${active ? "border-link/60 bg-accent text-link" : "border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground"}`}
+                        className={cn(
+                          "h-7 rounded-md border px-2 font-mono text-xs transition-colors",
+                          active
+                            ? "border-link/50 text-link"
+                            : "border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground",
+                        )}
                         type="button"
                         disabled={tagSaving}
                         onClick={() => void toggleTag(tag.id)}
                       >
-                        {active ? "✓ " : ""}
                         {tag.name}
                       </button>
                     );
@@ -666,7 +636,7 @@ function Inbox() {
                     <span className="text-sm text-muted-foreground">还没有标签</span>
                   ) : null}
                 </div>
-                <form className="mt-4 flex max-w-sm gap-2" onSubmit={addTag}>
+                <form className="mt-3 flex max-w-sm gap-2" onSubmit={addTag}>
                   <input
                     className="h-8 min-w-0 flex-1 rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
                     value={newTagName}
@@ -674,21 +644,22 @@ function Inbox() {
                     placeholder="新建标签"
                     maxLength={128}
                   />
-                  <button
-                    className="h-8 rounded-lg border border-border px-3 text-sm font-medium text-foreground/80 transition hover:bg-muted disabled:opacity-50"
+                  <Button
+                    variant="outline"
+                    size="sm"
                     type="submit"
                     disabled={!newTagName.trim() || tagSaving}
                   >
                     添加
-                  </button>
+                  </Button>
                 </form>
               </div>
             </div>
           ) : (
             <div className="flex min-h-72 items-center justify-center text-center">
               <div>
-                <p className="text-sm font-medium text-foreground/80">选择一条内容查看详情</p>
-                <p className="mt-2 text-sm text-muted-foreground">
+                <p className="text-sm">选择一条内容查看详情</p>
+                <p className="mt-1 text-sm text-muted-foreground">
                   正文只在点开时加载，列表不会携带全文。
                 </p>
               </div>

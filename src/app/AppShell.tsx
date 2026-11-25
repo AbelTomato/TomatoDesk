@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
+import { Button, Row } from "../components/ui";
 import Inbox from "../features/inbox/Inbox";
 import RepoDetail from "../features/repos/RepoDetail";
 import ReposPage from "../features/repos/ReposPage";
@@ -29,9 +30,24 @@ const navItems: Array<{ id: View; label: string }> = [
   { id: "settings", label: "设置" },
 ];
 
+/** `?view=repos&repo=<id>&thread=<id>` 只用于逐页走查与分享定位，缺省仍是收集页。 */
+function readInitialRoute(): { view: View; repoId: string | null; threadId: string | null } {
+  const params = new URLSearchParams(window.location.search);
+  const requested = params.get("view");
+  const view = navItems.some((item) => item.id === requested) ? (requested as View) : "inbox";
+  return {
+    view,
+    repoId: view === "repos" ? params.get("repo") : null,
+    threadId: view === "repos" ? params.get("thread") : null,
+  };
+}
+
 function AppShell() {
-  const [view, setView] = useState<View>("inbox");
-  const [repoId, setRepoId] = useState<string | null>(null);
+  const [route] = useState(readInitialRoute);
+  const [view, setView] = useState<View>(route.view);
+  const [repoId, setRepoId] = useState<string | null>(route.repoId);
+  /** 只作为详情页的初值：真正的开关在 RepoDetail 内部，返回列表时由这里清空。 */
+  const [threadId, setThreadId] = useState<string | null>(route.threadId);
   const [counts, setCounts] = useState<ItemStatusCounts>(emptyCounts);
   const [notice, setNotice] = useState<MigrationNotice | null>(null);
   const [noticeDismissed, setNoticeDismissed] = useState(false);
@@ -80,77 +96,75 @@ function AppShell() {
 
   function navigate(next: View) {
     setView(next);
-    if (next !== "repos") setRepoId(null);
+    if (next !== "repos") {
+      setRepoId(null);
+      setThreadId(null);
+    }
+  }
+
+  function openRepo(id: string) {
+    setRepoId(id);
+    setThreadId(null);
+  }
+
+  function closeRepo() {
+    setRepoId(null);
+    setThreadId(null);
   }
 
   const showMigrationNotice = Boolean(notice?.migratedTo) && !noticeDismissed;
 
   return (
-    <main className="flex min-h-screen bg-background text-foreground">
-      <aside className="flex w-full shrink-0 flex-col border-b border-border bg-card px-5 py-5 lg:sticky lg:top-0 lg:h-screen lg:w-64 lg:overflow-y-auto lg:border-r lg:border-b-0 lg:px-6 lg:py-7">
-        <div className="flex items-center justify-between gap-4 lg:block">
-          <div>
-            <p className="text-xs font-medium tracking-wide text-link">TomatoDesk</p>
-            <h1 className="mt-1 text-xl font-bold tracking-tight">工作站</h1>
-          </div>
-          <span className="rounded border border-border px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
-            {appEnvironment}
-          </span>
+    <main className="flex min-h-screen flex-col bg-background text-foreground lg:h-screen lg:overflow-hidden lg:flex-row">
+      <aside className="flex w-full shrink-0 flex-col border-b border-border px-4 py-4 lg:h-full lg:w-60 lg:overflow-y-auto lg:border-r lg:border-b-0 lg:px-5 lg:py-6">
+        <div className="flex items-baseline justify-between gap-4 lg:block">
+          <h1 className="text-base font-bold tracking-tight">TomatoDesk</h1>
+          <p className="font-mono text-xs text-muted-foreground">工作站 · {appEnvironment}</p>
         </div>
 
-        <button
-          className="mt-6 flex h-8 items-center justify-center rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground transition hover:bg-primary/90 active:translate-y-px focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
-          type="button"
-          onClick={() => void openCapture()}
-        >
+        <Button className="mt-5 w-full" onClick={() => void openCapture()}>
           快速收集
-        </button>
+        </Button>
 
-        <nav className="mt-7 grid grid-cols-2 gap-2 lg:grid-cols-1" aria-label="主导航">
-          {navItems.map((item) => {
-            const active = view === item.id;
-            return (
-              <button
-                key={item.id}
-                className={`flex items-center justify-between rounded-md px-3 py-2 text-left text-sm transition ${
-                  active
-                    ? "bg-accent font-medium text-link"
-                    : "text-muted-foreground hover:bg-accent hover:text-foreground"
-                }`}
-                type="button"
-                aria-current={active ? "page" : undefined}
-                onClick={() => navigate(item.id)}
-              >
-                <span>{item.label}</span>
-                {item.id === "inbox" ? (
+        <nav className="mt-5 grid grid-cols-2 gap-1 lg:grid-cols-1" aria-label="主导航">
+          {navItems.map((item) => (
+            <Row
+              key={item.id}
+              active={view === item.id}
+              aria-current={view === item.id ? "page" : undefined}
+              trailing={
+                item.id === "inbox" ? (
                   <span className="font-mono text-xs text-muted-foreground">{counts.pending}</span>
-                ) : null}
-              </button>
-            );
-          })}
+                ) : null
+              }
+              onClick={() => navigate(item.id)}
+            >
+              {item.label}
+            </Row>
+          ))}
         </nav>
 
-        <div className="mt-auto hidden border-t border-border pt-5 font-mono text-xs leading-5 text-muted-foreground lg:block">
+        <div className="mt-auto hidden border-t border-border pt-4 font-mono text-xs leading-5 text-muted-foreground lg:block">
           <p>Ctrl + K 聚焦搜索</p>
           <p>数据保存在本机 SQLite</p>
         </div>
       </aside>
 
-      <section className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <section className="flex min-h-0 min-w-0 flex-1 flex-col lg:overflow-hidden">
         <UpdateBanner />
         {showMigrationNotice && notice ? (
-          <div className="flex flex-wrap items-start justify-between gap-3 border-b border-warning/30 bg-warning/10 px-5 py-3 text-sm text-warning sm:px-7">
+          <div className="flex flex-wrap items-start justify-between gap-3 callout callout-warning border-b border-border px-5 py-3 text-sm sm:px-7">
             <p className="min-w-0 leading-6">
               数据库已升级到 v{notice.migratedTo}，旧 GitHub
               条目已清理，请到「仓库」页重新同步一次。
               {notice.backupPath ? (
-                <span className="ml-1 break-all font-mono text-[11px] opacity-80">
+                <span className="ml-1 break-all font-mono text-xs text-muted-foreground">
                   迁移前备份：{notice.backupPath}
                 </span>
               ) : null}
             </p>
             <button
-              className="shrink-0 text-xs font-medium underline"
+              className="shrink-0 text-xs font-medium text-muted-foreground underline hover:text-foreground"
               type="button"
               onClick={() => setNoticeDismissed(true)}
             >
@@ -163,9 +177,9 @@ function AppShell() {
           {view === "inbox" ? <Inbox /> : null}
           {view === "repos" ? (
             repoId ? (
-              <RepoDetail repoId={repoId} onBack={() => setRepoId(null)} />
+              <RepoDetail repoId={repoId} initialThreadId={threadId} onBack={closeRepo} />
             ) : (
-              <ReposPage onOpenRepo={setRepoId} onOpenSettings={() => navigate("settings")} />
+              <ReposPage onOpenRepo={openRepo} onOpenSettings={() => navigate("settings")} />
             )
           ) : null}
           {view === "search" ? <SearchPage /> : null}

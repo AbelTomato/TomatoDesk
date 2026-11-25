@@ -312,12 +312,29 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
   }
 }
 
-export function getAppInfo(): Promise<AppInfo> {
-  return call("get_app_info");
+/**
+ * 开发模式下的界面走查开关：带 `?preview` 时读接口返回 fixtures。
+ * 生产构建里 `import.meta.env.DEV` 为 false，这段连同 fixtures 一起被摇掉。
+ */
+const previewEnabled =
+  import.meta.env.DEV && new URLSearchParams(window.location.search).has("preview");
+
+type Fixtures = (typeof import("../features/dev/fixtures"))["fixtures"];
+
+async function preview<T>(pick: (data: Fixtures) => T): Promise<T | null> {
+  if (!previewEnabled) return null;
+  const { fixtures } = await import("../features/dev/fixtures");
+  return pick(fixtures);
 }
 
-export function getMigrationNotice(): Promise<MigrationNotice> {
-  return call("get_migration_notice");
+export async function getAppInfo(): Promise<AppInfo> {
+  const mocked = await preview((data) => data.appInfo);
+  return mocked ?? call("get_app_info");
+}
+
+export async function getMigrationNotice(): Promise<MigrationNotice> {
+  const mocked = await preview((data) => data.migrationNotice);
+  return mocked ?? call("get_migration_notice");
 }
 
 export function createItem(input: CreateItemInput): Promise<Item> {
@@ -340,17 +357,20 @@ export function getItem(id: string): Promise<Item> {
   return call("get_item", { input: { id } });
 }
 
-export function listItemsPage(input: ItemPageInput): Promise<ItemPage> {
-  return call("list_items_page", { input });
+export async function listItemsPage(input: ItemPageInput): Promise<ItemPage> {
+  const mocked = await preview((data) => data.pageFor(input));
+  return mocked ?? call("list_items_page", { input });
 }
 
-export function countItemsByStatus(kind?: ItemKind): Promise<ItemStatusCounts> {
-  return call("count_items_by_status", { input: kind ? { kind } : {} });
+export async function countItemsByStatus(kind?: ItemKind): Promise<ItemStatusCounts> {
+  const mocked = await preview((data) => data.counts);
+  return mocked ?? call("count_items_by_status", { input: kind ? { kind } : {} });
 }
 
 /** 详情正文按需加载：本地有就返回，链接类为空时会回源抓一次。 */
-export function getItemBody(id: string): Promise<ItemBody> {
-  return call("get_item_body", { input: { id } });
+export async function getItemBody(id: string): Promise<ItemBody> {
+  const mocked = await preview((data) => data.bodyFor(id));
+  return mocked ?? call("get_item_body", { input: { id } });
 }
 
 export function updateItem(input: UpdateItemInput): Promise<Item> {
@@ -361,12 +381,14 @@ export function archiveItem(id: string): Promise<Item> {
   return call("archive_item", { input: { id } });
 }
 
-export function searchItems(query: string): Promise<ItemSummary[]> {
-  return call("search_items", { input: { query } });
+export async function searchItems(query: string): Promise<ItemSummary[]> {
+  const mocked = await preview((data) => data.search(query));
+  return mocked ?? call("search_items", { input: { query } });
 }
 
-export function listTags(): Promise<Tag[]> {
-  return call("list_tags");
+export async function listTags(): Promise<Tag[]> {
+  const mocked = await preview((data) => data.tags);
+  return mocked ?? call("list_tags");
 }
 
 export function createTag(input: CreateTagInput): Promise<Tag> {
@@ -377,24 +399,27 @@ export function setItemTags(itemId: string, tagIds: string[]): Promise<Tag[]> {
   return call("set_item_tags", { input: { itemId, tagIds } });
 }
 
-export function getItemTags(itemId: string): Promise<Tag[]> {
-  return call("get_item_tags", { input: { itemId } });
+export async function getItemTags(itemId: string): Promise<Tag[]> {
+  const mocked = await preview((data) => data.itemTags[itemId] ?? []);
+  return mocked ?? call("get_item_tags", { input: { itemId } });
 }
 
 export function addGithubRepo(url: string): Promise<GithubRepo> {
   return call("add_github_repo", { input: { url } });
 }
 
-export function listGithubRepos(): Promise<GithubRepo[]> {
-  return call("list_github_repos");
+export async function listGithubRepos(): Promise<GithubRepo[]> {
+  const mocked = await preview((data) => data.githubRepos);
+  return mocked ?? call("list_github_repos");
 }
 
 export function removeGithubRepo(id: string): Promise<void> {
   return call("remove_github_repo", { input: { id } });
 }
 
-export function getGithubTokenStatus(): Promise<GithubTokenStatus> {
-  return call("get_github_token_status");
+export async function getGithubTokenStatus(): Promise<GithubTokenStatus> {
+  const mocked = await preview(() => ({ configured: true }));
+  return mocked ?? call("get_github_token_status");
 }
 
 export function saveGithubToken(token: string): Promise<GithubTokenStatus> {
@@ -419,16 +444,19 @@ export function syncAllGithubRepos(): Promise<GithubSyncSummary[]> {
   return call("sync_all_github_repos");
 }
 
-export function listGithubSyncRuns(): Promise<GithubSyncRun[]> {
-  return call("list_github_sync_runs");
+export async function listGithubSyncRuns(): Promise<GithubSyncRun[]> {
+  const mocked = await preview((data) => data.syncRuns);
+  return mocked ?? call("list_github_sync_runs");
 }
 
-export function listRepos(): Promise<RepoSummary[]> {
-  return call("list_repos");
+export async function listRepos(): Promise<RepoSummary[]> {
+  const mocked = await preview((data) => data.repos);
+  return mocked ?? call("list_repos");
 }
 
-export function getRepo(id: string): Promise<RepoDetail> {
-  return call("get_repo", { input: { id } });
+export async function getRepo(id: string): Promise<RepoDetail> {
+  const mocked = await preview((data) => data.repo);
+  return mocked ?? call("get_repo", { input: { id } });
 }
 
 /** 自定义描述与备注；传空字符串表示清除。 */
@@ -440,16 +468,19 @@ export function updateRepoMeta(input: {
   return call("update_repo_meta", { input });
 }
 
-export function listRepoThreads(input: ThreadPageInput): Promise<ThreadPage> {
-  return call("list_repo_threads", { input });
+export async function listRepoThreads(input: ThreadPageInput): Promise<ThreadPage> {
+  const mocked = await preview((data) => data.threadsFor(input));
+  return mocked ?? call("list_repo_threads", { input });
 }
 
-export function getThread(id: string): Promise<ThreadDetail> {
-  return call("get_thread", { input: { id } });
+export async function getThread(id: string): Promise<ThreadDetail> {
+  const mocked = await preview((data) => data.detailFor(id));
+  return mocked ?? call("get_thread", { input: { id } });
 }
 
-export function listRepoReleases(repoId: string): Promise<GithubRelease[]> {
-  return call("list_repo_releases", { input: { id: repoId } });
+export async function listRepoReleases(repoId: string): Promise<GithubRelease[]> {
+  const mocked = await preview((data) => data.releases);
+  return mocked ?? call("list_repo_releases", { input: { id: repoId } });
 }
 
 export function exportItemsJson(): Promise<ExportResult | null> {

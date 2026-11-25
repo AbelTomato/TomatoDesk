@@ -5,12 +5,18 @@ import AppShell from "./app/AppShell";
 import QuickCapture from "./features/capture/QuickCapture";
 import StyleGuide from "./features/dev/StyleGuide";
 
-const showStyleGuide =
-  import.meta.env.DEV && new URLSearchParams(window.location.search).has("styleguide");
+const params = new URLSearchParams(window.location.search);
+const showStyleGuide = import.meta.env.DEV && params.has("styleguide");
+/** 开发模式下单独预览快速收集窗口的排版，不需要启动 Tauri 窗口。 */
+const showCapturePreview = import.meta.env.DEV && params.has("capture");
 
 function App() {
   if (showStyleGuide) {
     return <StyleGuide />;
+  }
+
+  if (showCapturePreview) {
+    return <QuickCapture />;
   }
 
   if (isTauri() && getCurrentWindow().label === "quick-capture") {

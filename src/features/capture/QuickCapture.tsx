@@ -1,7 +1,9 @@
 import { type FormEvent, useEffect, useRef, useState } from "react";
+import { isTauri } from "@tauri-apps/api/core";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
+import { Button, Input, Textarea } from "../../components/ui";
 import { captureItem, dismissCapture } from "../../lib/api";
 
 const MAX_CAPTURE_LENGTH = 16_384;
@@ -43,6 +45,8 @@ function QuickCapture() {
   const overLimit = value.length > MAX_CAPTURE_LENGTH || note.length > MAX_CAPTURE_LENGTH;
 
   useEffect(() => {
+    // 浏览器里预览排版时没有 Tauri 窗口与剪贴板插件，跳过读取。
+    if (!isTauri()) return;
     const currentWindow = getCurrentWindow();
     let disposed = false;
     let unlisten: (() => void) | undefined;
@@ -114,29 +118,26 @@ function QuickCapture() {
   }
 
   return (
-    <main className="min-h-screen bg-background px-5 py-4 text-foreground">
+    <main className="min-h-screen bg-background px-4 py-3 text-foreground">
       <form className="mx-auto flex max-w-xl flex-col gap-3" onSubmit={submit}>
-        <header className="flex items-center justify-between">
-          <div>
-            <p className="text-xs font-semibold uppercase text-link">TomatoDesk</p>
-            <h1 className="mt-1 text-lg font-semibold">快速收集</h1>
+        <header className="flex items-center justify-between gap-3 border-b border-border pb-2">
+          <div className="flex items-baseline gap-2">
+            <h1 className="text-base font-bold tracking-tight">快速收集</h1>
+            <span className="font-mono text-xs text-muted-foreground">
+              {linkUrl ? "链接" : "笔记"}
+            </span>
           </div>
-          <button
-            className="rounded-md border border-border px-3 py-1.5 text-sm text-foreground/80 hover:bg-card focus:outline-2 focus:outline-offset-2 focus:outline-ring"
-            type="button"
-            onClick={() => void close()}
-          >
+          <Button variant="ghost" size="sm" onClick={() => void close()}>
             关闭
-          </button>
+          </Button>
         </header>
 
         {linkUrl ? (
           <>
-            <label className="flex flex-col gap-1 text-sm font-medium text-foreground/80">
-              链接
-              <input
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-medium text-muted-foreground">链接</span>
+              <Input
                 ref={urlRef}
-                className="rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground outline-none focus:border-ring focus:ring-2 focus:ring-ring/20"
                 type="text"
                 inputMode="url"
                 value={value}
@@ -147,10 +148,9 @@ function QuickCapture() {
                 }}
               />
             </label>
-            <label className="flex flex-col gap-1 text-sm font-medium text-foreground/80">
-              备注
-              <textarea
-                className="min-h-20 resize-y rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground outline-none focus:border-ring focus:ring-2 focus:ring-ring/20"
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-medium text-muted-foreground">备注</span>
+              <Textarea
                 value={note}
                 maxLength={MAX_CAPTURE_LENGTH}
                 placeholder="添加备注（可选）"
@@ -165,11 +165,11 @@ function QuickCapture() {
             </p>
           </>
         ) : (
-          <label className="flex flex-col gap-1 text-sm font-medium text-foreground/80">
-            笔记内容
-            <textarea
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-muted-foreground">内容</span>
+            <Textarea
               ref={valueRef}
-              className="min-h-40 resize-y rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground outline-none focus:border-ring focus:ring-2 focus:ring-ring/20"
+              rows={8}
               value={value}
               maxLength={MAX_CAPTURE_LENGTH}
               placeholder={readingClipboard ? "正在读取剪贴板…" : "粘贴或输入文本"}
@@ -185,13 +185,13 @@ function QuickCapture() {
           <p className="min-w-0 text-xs text-destructive" role="status">
             {error ?? (overLimit ? `内容不能超过 ${MAX_CAPTURE_LENGTH} 个字符。` : "")}
           </p>
-          <button
-            className="shrink-0 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition hover:bg-primary/90 focus:outline-2 focus:outline-offset-2 focus:outline-ring disabled:cursor-not-allowed disabled:opacity-50"
+          <Button
             type="submit"
+            className="shrink-0"
             disabled={!value.trim() || overLimit || saving}
           >
-            {saving ? "保存中…" : "保存到 Inbox"}
-          </button>
+            {saving ? "保存中…" : "保存到收集"}
+          </Button>
         </footer>
       </form>
     </main>
