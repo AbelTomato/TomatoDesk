@@ -71,6 +71,9 @@ jobs:
 
       - name: Build installer and manifest
         shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: ./scripts/build-installer.ps1
 
       - name: Verify release files
@@ -94,6 +97,19 @@ jobs:
           $declaredHash = (Get-Content $checksumPath -Raw -ErrorAction Stop) -split "\s+" | Select-Object -First 1
           $actualHash = (Get-FileHash $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($declaredHash -ne $actualHash) { throw "Installer SHA-256 does not match the checksum file." }
+
+          $installerSignaturePath = "$($installer.FullName).sig"
+          if (-not (Test-Path $installerSignaturePath)) { throw "Installer signature was not generated." }
+
+          $latestPath = Join-Path $artifactDirectory "latest.json"
+          if (-not (Test-Path $latestPath)) { throw "latest.json was not generated." }
+          $latest = Get-Content $latestPath -Raw | ConvertFrom-Json
+          if ($latest.version -ne $tauriVersion) { throw "latest.json version does not match application version." }
+          $platform = $latest.platforms.'windows-x86_64'
+          if (-not $platform) { throw "latest.json is missing the windows-x86_64 platform entry." }
+          if ($platform.url -notlike "*$($installer.Name)") { throw "latest.json url does not point at the installer." }
+          $installerSignature = (Get-Content $installerSignaturePath -Raw).Trim()
+          if ($platform.signature -ne $installerSignature) { throw "latest.json signature does not match the generated signature file." }
 
       - name: Resolve release notes
         shell: pwsh
