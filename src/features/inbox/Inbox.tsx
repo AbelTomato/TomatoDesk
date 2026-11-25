@@ -3,6 +3,7 @@ import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import GithubPanel from "../github/GithubPanel";
+import UpdateBanner from "../update/UpdateBanner";
 
 import {
   createTag,
@@ -367,6 +368,7 @@ function Inbox() {
         </aside>
 
         <section className="flex min-w-0 flex-1 flex-col">
+          <UpdateBanner />
           {showGithub ? (
             <GithubPanel onSynced={refreshGithubItems} />
           ) : (

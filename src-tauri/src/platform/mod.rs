@@ -71,9 +71,19 @@ fn show_window<R: Runtime>(app: &AppHandle<R>, label: &str) {
 fn install_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
     let show_main = MenuItem::with_id(app, "show-main", "显示主窗口", true, None::<&str>)?;
     let quick_capture = MenuItem::with_id(app, "quick-capture", "快速收集", true, None::<&str>)?;
+    let check_updates = MenuItem::with_id(app, "check-updates", "检查更新", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "退出 TomatoDesk", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show_main, &quick_capture, &separator, &quit])?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &show_main,
+            &quick_capture,
+            &check_updates,
+            &separator,
+            &quit,
+        ],
+    )?;
 
     let mut tray = TrayIconBuilder::new()
         .menu(&menu)
@@ -82,6 +92,12 @@ fn install_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show-main" => show_main_window(app),
             "quick-capture" => show_quick_capture_window(app),
+            "check-updates" => {
+                show_main_window(app);
+                if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+                    let _ = window.emit("check-updates-requested", ());
+                }
+            }
             "quit" => app.exit(0),
             _ => {}
         });

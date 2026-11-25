@@ -3,5 +3,10 @@
   "identifier": "default",
   "description": "Capability for the main window",
   "windows": ["main", "quick-capture"],
-  "permissions": ["core:default", "opener:default", "clipboard-manager:allow-read-text"]
+  "permissions": [
+    "core:default",
+    "opener:default",
+    "clipboard-manager:allow-read-text",
+    "updater:default"
+  ]
 }

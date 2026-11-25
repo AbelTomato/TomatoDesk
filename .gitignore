@@ -26,4 +26,8 @@ dist-ssr
 # Generated Windows installers
 /artifacts/
 
+# Updater signing keys
+*.key
+*.key.pub
+
 .workbuddy-ai/
