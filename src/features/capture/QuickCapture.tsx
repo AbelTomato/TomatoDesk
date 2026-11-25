@@ -114,15 +114,15 @@ function QuickCapture() {
   }
 
   return (
-    <main className="min-h-screen bg-canvas px-5 py-4 text-ink-950">
+    <main className="min-h-screen bg-background px-5 py-4 text-foreground">
       <form className="mx-auto flex max-w-xl flex-col gap-3" onSubmit={submit}>
         <header className="flex items-center justify-between">
           <div>
-            <p className="text-xs font-semibold uppercase text-tomato-600">TomatoDesk</p>
+            <p className="text-xs font-semibold uppercase text-link">TomatoDesk</p>
             <h1 className="mt-1 text-lg font-semibold">快速收集</h1>
           </div>
           <button
-            className="rounded-md border border-line px-3 py-1.5 text-sm text-ink-700 hover:bg-surface focus:outline-2 focus:outline-offset-2 focus:outline-tomato-600"
+            className="rounded-md border border-border px-3 py-1.5 text-sm text-foreground/80 hover:bg-card focus:outline-2 focus:outline-offset-2 focus:outline-ring"
             type="button"
             onClick={() => void close()}
           >
@@ -132,11 +132,11 @@ function QuickCapture() {
 
         {linkUrl ? (
           <>
-            <label className="flex flex-col gap-1 text-sm font-medium text-ink-700">
+            <label className="flex flex-col gap-1 text-sm font-medium text-foreground/80">
               链接
               <input
                 ref={urlRef}
-                className="rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink-950 outline-none focus:border-tomato-600 focus:ring-2 focus:ring-tomato-100"
+                className="rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground outline-none focus:border-ring focus:ring-2 focus:ring-ring/20"
                 type="text"
                 inputMode="url"
                 value={value}
@@ -147,10 +147,10 @@ function QuickCapture() {
                 }}
               />
             </label>
-            <label className="flex flex-col gap-1 text-sm font-medium text-ink-700">
+            <label className="flex flex-col gap-1 text-sm font-medium text-foreground/80">
               备注
               <textarea
-                className="min-h-20 resize-y rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink-950 outline-none focus:border-tomato-600 focus:ring-2 focus:ring-tomato-100"
+                className="min-h-20 resize-y rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground outline-none focus:border-ring focus:ring-2 focus:ring-ring/20"
                 value={note}
                 maxLength={MAX_CAPTURE_LENGTH}
                 placeholder="添加备注（可选）"
@@ -160,16 +160,16 @@ function QuickCapture() {
                 }}
               />
             </label>
-            <p className="text-xs leading-5 text-ink-500">
+            <p className="text-xs leading-5 text-muted-foreground">
               保存时会尝试读取标题、描述和规范链接；网络失败时仍保留 URL 与备注。
             </p>
           </>
         ) : (
-          <label className="flex flex-col gap-1 text-sm font-medium text-ink-700">
+          <label className="flex flex-col gap-1 text-sm font-medium text-foreground/80">
             笔记内容
             <textarea
               ref={valueRef}
-              className="min-h-40 resize-y rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink-950 outline-none focus:border-tomato-600 focus:ring-2 focus:ring-tomato-100"
+              className="min-h-40 resize-y rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground outline-none focus:border-ring focus:ring-2 focus:ring-ring/20"
               value={value}
               maxLength={MAX_CAPTURE_LENGTH}
               placeholder={readingClipboard ? "正在读取剪贴板…" : "粘贴或输入文本"}
@@ -181,12 +181,12 @@ function QuickCapture() {
           </label>
         )}
 
-        <footer className="flex items-center justify-between gap-3 border-t border-line pt-3">
-          <p className="min-w-0 text-xs text-red-700" role="status">
+        <footer className="flex items-center justify-between gap-3 border-t border-border pt-3">
+          <p className="min-w-0 text-xs text-destructive" role="status">
             {error ?? (overLimit ? `内容不能超过 ${MAX_CAPTURE_LENGTH} 个字符。` : "")}
           </p>
           <button
-            className="shrink-0 rounded-md bg-tomato-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-tomato-500 focus:outline-2 focus:outline-offset-2 focus:outline-tomato-600 disabled:cursor-not-allowed disabled:opacity-50"
+            className="shrink-0 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition hover:bg-primary/90 focus:outline-2 focus:outline-offset-2 focus:outline-ring disabled:cursor-not-allowed disabled:opacity-50"
             type="submit"
             disabled={!value.trim() || overLimit || saving}
           >

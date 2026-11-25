@@ -185,10 +185,10 @@ function UpdateBanner() {
 
   const tone =
     phase === "error"
-      ? "border-red-200 bg-red-50"
+      ? "border-destructive/30 bg-destructive/10"
       : phase === "current"
-        ? "border-line bg-surface"
-        : "border-tomato-100 bg-tomato-50";
+        ? "border-border bg-card"
+        : "border-link/30 bg-link/10";
 
   const title =
     phase === "checking"
@@ -221,27 +221,27 @@ function UpdateBanner() {
                 : (message ?? "更新过程出现未知错误。");
 
   const primaryClass =
-    "rounded-md bg-tomato-600 px-3 py-2 text-sm font-semibold text-white transition hover:bg-tomato-500 disabled:opacity-50";
+    "rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground transition hover:bg-primary/90 disabled:opacity-50";
   const secondaryClass =
-    "rounded-md border border-line bg-surface px-3 py-2 text-sm font-medium text-ink-700 hover:bg-canvas disabled:opacity-50";
+    "rounded-md border border-border bg-card px-3 py-2 text-sm font-medium text-foreground/80 hover:bg-background disabled:opacity-50";
 
   return (
     <section className={`border-b px-5 py-3 sm:px-7 ${tone}`} aria-live="polite" role="status">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div className="min-w-0">
           <p
-            className={`text-sm font-semibold ${phase === "error" ? "text-red-700" : phase === "current" ? "text-ink-950" : "text-tomato-600"}`}
+            className={`text-sm font-semibold ${phase === "error" ? "text-destructive" : phase === "current" ? "text-foreground" : "text-link"}`}
           >
             {title}
           </p>
-          <p className="mt-1 text-xs leading-5 text-ink-700">{hint}</p>
+          <p className="mt-1 text-xs leading-5 text-foreground/80">{hint}</p>
 
           {notes && (phase === "available" || phase === "ready") ? (
             <details className="mt-2 max-w-2xl">
-              <summary className="cursor-pointer text-xs font-semibold text-ink-700">
+              <summary className="cursor-pointer text-xs font-semibold text-foreground/80">
                 更新说明
               </summary>
-              <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-md border border-line bg-surface p-3 text-xs leading-5 text-ink-700">
+              <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-card p-3 text-xs leading-5 text-foreground/80">
                 {notes}
               </pre>
             </details>
@@ -249,13 +249,13 @@ function UpdateBanner() {
 
           {phase === "downloading" ? (
             <div className="mt-2 max-w-md">
-              <div className="h-1.5 w-full overflow-hidden rounded-full bg-tomato-100">
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
                 <div
-                  className="h-full rounded-full bg-tomato-600 transition-[width] duration-300"
+                  className="h-full rounded-full bg-primary transition-[width] duration-300"
                   style={{ width: `${percent}%` }}
                 />
               </div>
-              <p className="mt-1 text-[11px] text-ink-500">
+              <p className="mt-1 text-[11px] text-muted-foreground">
                 {total > 0
                   ? `${formatBytes(received)} / ${formatBytes(total)} · ${percent}%`
                   : `${formatBytes(received)} 已下载`}
@@ -265,7 +265,9 @@ function UpdateBanner() {
         </div>
 
         <div className="flex shrink-0 flex-wrap items-center gap-2">
-          {phase === "checking" ? <span className="text-xs text-ink-500">请稍候…</span> : null}
+          {phase === "checking" ? (
+            <span className="text-xs text-muted-foreground">请稍候…</span>
+          ) : null}
           {phase === "available" ? (
             <>
               <button className={primaryClass} type="button" onClick={() => void startDownload()}>
@@ -294,7 +296,9 @@ function UpdateBanner() {
               </button>
             </>
           ) : null}
-          {phase === "installing" ? <span className="text-xs text-ink-500">请稍候…</span> : null}
+          {phase === "installing" ? (
+            <span className="text-xs text-muted-foreground">请稍候…</span>
+          ) : null}
           {phase === "current" ? (
             <button className={secondaryClass} type="button" onClick={dismiss}>
               关闭
