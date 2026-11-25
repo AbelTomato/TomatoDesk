@@ -25,8 +25,10 @@ export interface AppInfo {
 
 export type ItemKind = "note" | "link" | "github";
 export type ItemStatus = "pending" | "processed" | "archived";
+export type ItemSort = "updated" | "created";
 
-export interface Item {
+/** 列表行：不含正文，首屏只传索引字段。 */
+export interface ItemSummary {
   id: string;
   kind: ItemKind;
   source: string;
@@ -37,6 +39,38 @@ export interface Item {
   status: ItemStatus;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface Item extends ItemSummary {
+  body: string | null;
+}
+
+export interface ItemPage {
+  items: ItemSummary[];
+  nextCursor: string | null;
+  hasMore: boolean;
+}
+
+export interface ItemPageInput {
+  status?: ItemStatus | null;
+  kind?: ItemKind | null;
+  sort?: ItemSort;
+  cursor?: string | null;
+  limit?: number;
+}
+
+export interface ItemStatusCounts {
+  all: number;
+  pending: number;
+  processed: number;
+  archived: number;
+}
+
+export interface ItemBody {
+  id: string;
+  kind: ItemKind;
+  url: string | null;
+  body: string | null;
 }
 
 export interface CreateItemInput {
@@ -157,8 +191,17 @@ export function getItem(id: string): Promise<Item> {
   return call("get_item", { input: { id } });
 }
 
-export function listItems(): Promise<Item[]> {
-  return call("list_items");
+export function listItemsPage(input: ItemPageInput): Promise<ItemPage> {
+  return call("list_items_page", { input });
+}
+
+export function countItemsByStatus(kind?: ItemKind): Promise<ItemStatusCounts> {
+  return call("count_items_by_status", { input: kind ? { kind } : {} });
+}
+
+/** 详情正文按需加载：本地有就返回，链接类为空时会回源抓一次。 */
+export function getItemBody(id: string): Promise<ItemBody> {
+  return call("get_item_body", { input: { id } });
 }
 
 export function updateItem(input: UpdateItemInput): Promise<Item> {
@@ -169,7 +212,7 @@ export function archiveItem(id: string): Promise<Item> {
   return call("archive_item", { input: { id } });
 }
 
-export function searchItems(query: string): Promise<Item[]> {
+export function searchItems(query: string): Promise<ItemSummary[]> {
   return call("search_items", { input: { query } });
 }
 
@@ -213,8 +256,14 @@ export function deleteGithubToken(): Promise<GithubTokenStatus> {
   return call("delete_github_token");
 }
 
-export function syncGithubRepo(id: string): Promise<GithubSyncSummary> {
-  return call("sync_github_repo", { input: { id } });
+export type GithubSyncScope = "incremental" | "full";
+
+/** `full` 是显式的「加载历史」：拉全部状态并忽略增量游标。 */
+export function syncGithubRepo(
+  id: string,
+  scope: GithubSyncScope = "incremental",
+): Promise<GithubSyncSummary> {
+  return call("sync_github_repo", { input: { id, scope } });
 }
 
 export function syncAllGithubRepos(): Promise<GithubSyncSummary[]> {
