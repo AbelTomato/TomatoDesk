@@ -5,6 +5,7 @@ mod error;
 mod export;
 mod github;
 mod items;
+mod repos;
 mod tags;
 
 #[cfg(test)]
@@ -15,4 +16,5 @@ pub use capture::*;
 pub use export::*;
 pub use github::*;
 pub use items::*;
+pub use repos::*;
 pub use tags::*;

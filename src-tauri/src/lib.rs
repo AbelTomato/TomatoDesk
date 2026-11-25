@@ -25,6 +25,7 @@ pub fn run() {
         )
         .invoke_handler(tauri::generate_handler![
             commands::get_app_info,
+            commands::get_migration_notice,
             commands::create_item,
             commands::get_item,
             commands::get_item_body,
@@ -49,6 +50,12 @@ pub fn run() {
             commands::sync_github_repo,
             commands::sync_all_github_repos,
             commands::list_github_sync_runs,
+            commands::list_repos,
+            commands::get_repo,
+            commands::update_repo_meta,
+            commands::list_repo_threads,
+            commands::get_thread,
+            commands::list_repo_releases,
             commands::export_items_json,
             commands::export_items_markdown
         ])

@@ -20,6 +20,7 @@ type RawItem = (
     Option<String>,
     Option<String>,
     Option<String>,
+    Option<String>,
     String,
     String,
     String,
@@ -33,17 +34,18 @@ type RawSummary = (
     Option<String>,
     Option<String>,
     Option<String>,
+    Option<String>,
     String,
     String,
     String,
 );
 
 const ITEM_FIELDS: &str =
-    "id, kind, source, url, title, summary, note, body, status, created_at, updated_at";
+    "id, kind, source, url, title, summary, note, body, repo_id, status, created_at, updated_at";
 const SUMMARY_FIELDS: &str =
-    "id, kind, source, url, title, summary, note, status, created_at, updated_at";
+    "id, kind, source, url, title, summary, note, repo_id, status, created_at, updated_at";
 const SEARCH_SUMMARY_FIELDS: &str = "items.id, items.kind, items.source, items.url, items.title,
-                                     items.summary, items.note, items.status,
+                                     items.summary, items.note, items.repo_id, items.status,
                                      items.created_at, items.updated_at";
 const SEARCH_LIMIT: u32 = 100;
 
@@ -63,8 +65,8 @@ impl ItemRepository {
         let id = Uuid::new_v4().to_string();
         self.database.with_connection(|connection| {
             connection.execute(
-                "INSERT INTO items(id, kind, source, url, title, summary, note, body)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                "INSERT INTO items(id, kind, source, url, title, summary, note, body, repo_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     id,
                     item.kind.as_str(),
@@ -73,7 +75,8 @@ impl ItemRepository {
                     item.title,
                     item.summary,
                     item.note,
-                    item.body
+                    item.body,
+                    item.repo_id
                 ],
             )?;
             get_item(connection, &id)?.ok_or(DbError::NotFound("item"))
@@ -109,6 +112,10 @@ impl ItemRepository {
         if let Some(kind) = query.kind {
             sql.push_str(" AND kind = ?");
             values.push(Value::Text(kind.as_str().to_owned()));
+        }
+        if let Some(repo_id) = &query.repo_id {
+            sql.push_str(" AND repo_id = ?");
+            values.push(Value::Text(repo_id.clone()));
         }
         if let Some(cursor) = &query.cursor {
             sql.push_str(&format!(" AND ({column} < ? OR ({column} = ? AND id < ?))"));
@@ -301,6 +308,7 @@ fn raw_item(row: &Row<'_>) -> rusqlite::Result<RawItem> {
         row.get(8)?,
         row.get(9)?,
         row.get(10)?,
+        row.get(11)?,
     ))
 }
 
@@ -316,6 +324,7 @@ fn raw_summary(row: &Row<'_>) -> rusqlite::Result<RawSummary> {
         row.get(7)?,
         row.get(8)?,
         row.get(9)?,
+        row.get(10)?,
     ))
 }
 
@@ -329,9 +338,10 @@ fn decode_item(row: RawItem) -> DbResult<Item> {
         summary: row.5,
         note: row.6,
         body: row.7,
-        status: parse_value(row.8, "item status")?,
-        created_at: row.9,
-        updated_at: row.10,
+        repo_id: row.8,
+        status: parse_value(row.9, "item status")?,
+        created_at: row.10,
+        updated_at: row.11,
     })
 }
 
@@ -344,9 +354,10 @@ fn decode_summary(row: RawSummary) -> DbResult<ItemSummary> {
         title: row.4,
         summary: row.5,
         note: row.6,
-        status: parse_value(row.7, "item status")?,
-        created_at: row.8,
-        updated_at: row.9,
+        repo_id: row.7,
+        status: parse_value(row.8, "item status")?,
+        created_at: row.9,
+        updated_at: row.10,
     })
 }
 

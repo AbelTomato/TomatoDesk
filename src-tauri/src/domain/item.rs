@@ -1,6 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
+use super::cursor::KeysetCursor;
+
+/// 条目列表沿用同一套键集游标编码，名字保留是为了不破坏既有调用点。
+pub type ItemCursor = KeysetCursor;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ItemKind {
@@ -91,6 +96,8 @@ pub struct ItemSummary {
     pub title: Option<String>,
     pub summary: Option<String>,
     pub note: Option<String>,
+    /// 挂在某个 GitHub 仓库下时指向该仓库，普通条目为 `None`。
+    pub repo_id: Option<String>,
     pub status: ItemStatus,
     pub created_at: String,
     pub updated_at: String,
@@ -106,6 +113,7 @@ impl From<&Item> for ItemSummary {
             title: item.title.clone(),
             summary: item.summary.clone(),
             note: item.note.clone(),
+            repo_id: item.repo_id.clone(),
             status: item.status,
             created_at: item.created_at.clone(),
             updated_at: item.updated_at.clone(),
@@ -113,37 +121,13 @@ impl From<&Item> for ItemSummary {
     }
 }
 
-/// 键集游标：按排序值 + id 定位下一页，避免 offset 分页的漂移。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ItemCursor {
-    pub value: String,
-    pub id: String,
-}
-
-impl ItemCursor {
-    pub fn encode(&self) -> String {
-        format!("{}|{}", self.value, self.id)
-    }
-
-    /// 游标对前端是不透明字符串，解析失败按非法输入处理。
-    pub fn parse(raw: &str) -> Option<Self> {
-        let (value, id) = raw.split_once('|')?;
-        let (value, id) = (value.trim(), id.trim());
-        if value.is_empty() || id.is_empty() {
-            return None;
-        }
-        Some(Self {
-            value: value.to_owned(),
-            id: id.to_owned(),
-        })
-    }
-}
-
+/// 列表查询：筛选、排序与键集游标全部下沉到 SQL。
 #[derive(Debug, Clone)]
 pub struct ItemPageQuery {
     pub status: Option<ItemStatus>,
     pub kind: Option<ItemKind>,
+    /// 只看挂在某个仓库下的个人条目。
+    pub repo_id: Option<String>,
     pub sort: ItemSort,
     pub cursor: Option<ItemCursor>,
     pub limit: u32,
@@ -186,6 +170,7 @@ pub struct Item {
     pub summary: Option<String>,
     pub note: Option<String>,
     pub body: Option<String>,
+    pub repo_id: Option<String>,
     pub status: ItemStatus,
     pub created_at: String,
     pub updated_at: String,
@@ -201,6 +186,7 @@ pub struct NewItem {
     pub summary: Option<String>,
     pub note: Option<String>,
     pub body: Option<String>,
+    pub repo_id: Option<String>,
 }
 
 /// 列表摘要统一截断长度，与迁移里的 `substr(summary, 1, 200)` 保持一致。

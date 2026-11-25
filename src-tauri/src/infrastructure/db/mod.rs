@@ -5,7 +5,8 @@ mod repositories;
 pub use database::Database;
 pub use error::{DbError, DbResult};
 pub use repositories::{
-    GithubEventRepository, GithubRepoRepository, ItemRepository, SyncRunRepository, TagRepository,
+    GithubReleaseRepository, GithubRepoRepository, GithubThreadRepository, ItemRepository,
+    SyncRunRepository, TagRepository,
 };
 
 #[cfg(test)]

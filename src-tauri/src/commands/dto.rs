@@ -3,7 +3,10 @@ use serde_json::Value;
 
 use crate::{
     commands::error::{CommandError, CommandResult},
-    domain::{ItemCursor, ItemKind, ItemPageQuery, ItemSort, ItemStatus},
+    domain::{
+        ItemCursor, ItemKind, ItemPageQuery, ItemSort, ItemStatus, ThreadKind, ThreadQuery,
+        ThreadRelationship, ThreadState,
+    },
 };
 
 const MAX_ID_LENGTH: usize = 128;
@@ -11,6 +14,8 @@ const MAX_SEARCH_LENGTH: usize = 512;
 const MAX_TAGS_PER_ITEM: usize = 100;
 const MAX_CAPTURE_LENGTH: usize = 16_384;
 const MAX_TOKEN_LENGTH: usize = 512;
+const MAX_DESCRIPTION_LENGTH: usize = 4_096;
+const MAX_NOTE_LENGTH: usize = 16_384;
 const DEFAULT_PAGE_SIZE: u32 = 50;
 const MAX_PAGE_SIZE: u32 = 200;
 
@@ -28,11 +33,14 @@ pub struct CreateItemInput {
     pub title: Option<String>,
     pub summary: Option<String>,
     pub note: Option<String>,
+    /// 挂在某个 GitHub 仓库下时传入，普通收集为 `None`。
+    pub repo_id: Option<String>,
 }
 
 impl CreateItemInput {
     pub(super) fn validate(mut self) -> CommandResult<Self> {
         self.source = required_text("source", self.source, 4096)?;
+        self.repo_id = optional_text("repoId", self.repo_id.take(), MAX_ID_LENGTH)?;
         Ok(self)
     }
 }
@@ -82,6 +90,7 @@ impl UpdateItemInput {
 pub struct ListItemsPageInput {
     pub status: Option<ItemStatus>,
     pub kind: Option<ItemKind>,
+    pub repo_id: Option<String>,
     pub sort: Option<ItemSort>,
     pub cursor: Option<String>,
     pub limit: Option<u32>,
@@ -105,6 +114,7 @@ impl ListItemsPageInput {
         Ok(ItemPageQuery {
             status: self.status,
             kind: self.kind,
+            repo_id: optional_text("repoId", self.repo_id, MAX_ID_LENGTH)?,
             sort: self.sort.unwrap_or(ItemSort::Updated),
             cursor,
             limit,
@@ -217,6 +227,85 @@ impl SetItemTagsInput {
         }
         Ok(self)
     }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateRepoMetaInput {
+    pub id: String,
+    pub custom_description: Option<String>,
+    pub custom_note: Option<String>,
+}
+
+impl UpdateRepoMetaInput {
+    /// 空字符串表示「清除自定义内容」，统一折叠成 `None`。
+    pub(super) fn validate(self) -> CommandResult<(String, Option<String>, Option<String>)> {
+        let id = required_text("id", self.id, MAX_ID_LENGTH)?;
+        let custom_description = optional_text(
+            "customDescription",
+            self.custom_description,
+            MAX_DESCRIPTION_LENGTH,
+        )?;
+        let custom_note = optional_text("customNote", self.custom_note, MAX_NOTE_LENGTH)?;
+        Ok((id, custom_description, custom_note))
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListRepoThreadsInput {
+    pub repo_id: String,
+    pub kind: Option<ThreadKind>,
+    pub state: Option<ThreadState>,
+    pub relationship: Option<ThreadRelationship>,
+    pub cursor: Option<String>,
+    pub limit: Option<u32>,
+}
+
+impl ListRepoThreadsInput {
+    pub(super) fn into_query(self) -> CommandResult<ThreadQuery> {
+        let limit = self.limit.unwrap_or(DEFAULT_PAGE_SIZE);
+        if limit == 0 || limit > MAX_PAGE_SIZE {
+            return Err(CommandError::validation(format!(
+                "limit must be between 1 and {MAX_PAGE_SIZE}"
+            )));
+        }
+        let cursor =
+            match self.cursor.as_deref().map(str::trim) {
+                Some(raw) if !raw.is_empty() => Some(ItemCursor::parse(raw).ok_or_else(|| {
+                    CommandError::validation("cursor is invalid, reload the list")
+                })?),
+                _ => None,
+            };
+        Ok(ThreadQuery {
+            repo_id: required_text("repoId", self.repo_id, MAX_ID_LENGTH)?,
+            kind: self.kind,
+            state: self.state,
+            relationship: self.relationship,
+            cursor,
+            limit,
+        })
+    }
+}
+
+fn optional_text(
+    field: &str,
+    value: Option<String>,
+    max_length: usize,
+) -> CommandResult<Option<String>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    if value.chars().count() > max_length {
+        return Err(CommandError::validation(format!(
+            "{field} cannot exceed {max_length} characters"
+        )));
+    }
+    Ok(Some(value.to_owned()))
 }
 
 fn required_text(field: &str, value: String, max_length: usize) -> CommandResult<String> {

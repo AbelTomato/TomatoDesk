@@ -1,10 +1,10 @@
 use std::time::Duration;
 
-use reqwest::{Client, StatusCode, Url, header};
-use serde::Deserialize;
+use reqwest::{Client, Response, StatusCode, Url, header};
+use serde::de::DeserializeOwned;
 
 const API_ROOT: &str = "https://api.github.com";
-const USER_AGENT: &str = "TomatoDesk/0.1.0";
+const PER_PAGE: &str = "100";
 
 #[derive(Debug)]
 pub enum GithubError {
@@ -49,25 +49,51 @@ impl std::fmt::Display for GithubError {
 
 impl std::error::Error for GithubError {}
 
-#[derive(Debug, Clone)]
-pub struct GithubResponse<T> {
-    pub value: T,
-    pub etag: Option<String>,
-    pub not_modified: bool,
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct GithubUser {
+    pub login: String,
 }
 
-#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct GithubViewer {
+    pub login: String,
+}
+
+/// `/repos/{owner}/{name}` 里展示用得上的字段。
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct GithubRepositoryMeta {
+    pub name: String,
+    pub full_name: String,
+    pub description: Option<String>,
+    pub homepage: Option<String>,
+    pub language: Option<String>,
+    pub stargazers_count: Option<i64>,
+    pub forks_count: Option<i64>,
+    pub open_issues_count: Option<i64>,
+    pub default_branch: Option<String>,
+    pub pushed_at: Option<String>,
+    #[serde(default)]
+    pub archived: bool,
+    #[serde(default)]
+    pub private: bool,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct GithubRelease {
     pub id: u64,
     pub tag_name: String,
     pub name: Option<String>,
     pub body: Option<String>,
     pub html_url: String,
+    #[serde(default)]
+    pub draft: bool,
+    #[serde(default)]
+    pub prerelease: bool,
     pub published_at: Option<String>,
     pub created_at: String,
 }
 
-#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct GithubIssue {
     pub id: u64,
     pub number: u64,
@@ -75,9 +101,45 @@ pub struct GithubIssue {
     pub body: Option<String>,
     pub html_url: String,
     pub state: String,
+    pub state_reason: Option<String>,
+    pub comments: Option<u64>,
+    pub user: Option<GithubUser>,
+    pub assignees: Option<Vec<GithubUser>>,
     pub updated_at: String,
     pub created_at: String,
+    pub closed_at: Option<String>,
     pub pull_request: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct GithubPull {
+    pub id: u64,
+    pub number: u64,
+    pub title: String,
+    pub body: Option<String>,
+    pub html_url: String,
+    pub state: String,
+    #[serde(default)]
+    pub draft: bool,
+    pub comments: Option<u64>,
+    pub additions: Option<i64>,
+    pub deletions: Option<i64>,
+    pub changed_files: Option<i64>,
+    pub user: Option<GithubUser>,
+    pub assignees: Option<Vec<GithubUser>>,
+    pub requested_reviewers: Option<Vec<GithubUser>>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub closed_at: Option<String>,
+    pub merged_at: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct GithubReview {
+    pub id: u64,
+    pub user: Option<GithubUser>,
+    pub state: Option<String>,
+    pub submitted_at: Option<String>,
 }
 
 #[derive(Clone)]
@@ -95,114 +157,162 @@ impl GithubClient {
         Ok(Self { client, token })
     }
 
+    /// 当前 Token 所属用户，用于推导 PR / Issue 与我的关系。
+    pub async fn viewer(&self) -> Result<GithubViewer, GithubError> {
+        self.get_json(endpoint("/user")?).await
+    }
+
+    pub async fn repository(
+        &self,
+        owner: &str,
+        name: &str,
+    ) -> Result<GithubRepositoryMeta, GithubError> {
+        self.get_json(endpoint(&format!("/repos/{owner}/{name}"))?)
+            .await
+    }
+
+    /// README 原文（Markdown）。仓库没有 README 时返回 `None`。
+    pub async fn readme(&self, owner: &str, name: &str) -> Result<Option<String>, GithubError> {
+        self.get_raw(endpoint(&format!("/repos/{owner}/{name}/readme"))?)
+            .await
+    }
+
     pub async fn releases(
         &self,
         owner: &str,
         name: &str,
-        etag: Option<&str>,
-    ) -> Result<GithubResponse<Vec<GithubRelease>>, GithubError> {
-        let url = endpoint(&format!("/repos/{owner}/{name}/releases?per_page=100"))?;
-        self.get_list(url, etag).await
+    ) -> Result<Vec<GithubRelease>, GithubError> {
+        let url = endpoint(&format!(
+            "/repos/{owner}/{name}/releases?per_page={PER_PAGE}"
+        ))?;
+        self.get_pages(url, |_| false).await
     }
 
-    /// `state` 取 `open` 或 `all`；`since` 只带增量同步，GitHub 按 `updated_at` 过滤。
+    /// `state` 取 `open` / `closed` / `all`；`since` 只带增量同步，GitHub 按 `updated_at` 过滤。
     pub async fn issues(
         &self,
         owner: &str,
         name: &str,
         state: &str,
         since: Option<&str>,
-        etag: Option<&str>,
-    ) -> Result<GithubResponse<Vec<GithubIssue>>, GithubError> {
+    ) -> Result<Vec<GithubIssue>, GithubError> {
         let mut url = endpoint(&format!("/repos/{owner}/{name}/issues"))?;
         {
             let mut pairs = url.query_pairs_mut();
             pairs.append_pair("state", state);
             pairs.append_pair("sort", "updated");
             pairs.append_pair("direction", "desc");
-            pairs.append_pair("per_page", "100");
+            pairs.append_pair("per_page", PER_PAGE);
             if let Some(since) = since {
                 pairs.append_pair("since", since);
             }
         }
-        self.get_list(url, etag).await
+        self.get_pages(url, |_| false).await
     }
 
-    async fn get_list<T: for<'de> Deserialize<'de>>(
+    /// PR 列表。接口不支持 `since`，按 `updated` 倒序翻页，遇到早于 `since` 的条目即停止，
+    /// 这样增量同步只会读最近改动过的那几页。
+    pub async fn pulls(
         &self,
-        url: Url,
-        etag: Option<&str>,
-    ) -> Result<GithubResponse<Vec<T>>, GithubError> {
-        let mut url = url;
+        owner: &str,
+        name: &str,
+        state: &str,
+        since: Option<&str>,
+    ) -> Result<Vec<GithubPull>, GithubError> {
+        let mut url = endpoint(&format!("/repos/{owner}/{name}/pulls"))?;
+        {
+            let mut pairs = url.query_pairs_mut();
+            pairs.append_pair("state", state);
+            pairs.append_pair("sort", "updated");
+            pairs.append_pair("direction", "desc");
+            pairs.append_pair("per_page", PER_PAGE);
+        }
+        self.get_pages(url, |pull: &GithubPull| {
+            since.is_some_and(|since| pull.updated_at.as_str() < since)
+        })
+        .await
+    }
+
+    /// 单个 PR 的评审记录，只用来判断「我评审过」。
+    pub async fn reviews(
+        &self,
+        owner: &str,
+        name: &str,
+        number: u64,
+    ) -> Result<Vec<GithubReview>, GithubError> {
+        let url = endpoint(&format!(
+            "/repos/{owner}/{name}/pulls/{number}/reviews?per_page={PER_PAGE}"
+        ))?;
+        self.get_pages(url, |_| false).await
+    }
+
+    fn request(&self, url: &Url) -> reqwest::RequestBuilder {
+        self.client
+            .get(url.clone())
+            .header(header::ACCEPT, "application/vnd.github+json")
+            .header(
+                header::USER_AGENT,
+                concat!("TomatoDesk/", env!("CARGO_PKG_VERSION")),
+            )
+            .bearer_auth(&self.token)
+    }
+
+    async fn get_json<T: DeserializeOwned>(&self, url: Url) -> Result<T, GithubError> {
+        let response = self.send(&url).await?;
+        if !response.status().is_success() {
+            return Err(response_error(response).await);
+        }
+        response
+            .json::<T>()
+            .await
+            .map_err(|error| GithubError::Api(error.to_string()))
+    }
+
+    /// 原样返回响应体，用于 README 这类非 JSON 资源。
+    async fn get_raw(&self, url: Url) -> Result<Option<String>, GithubError> {
+        let response = self
+            .client
+            .get(url)
+            .header(header::ACCEPT, "application/vnd.github.raw")
+            .header(
+                header::USER_AGENT,
+                concat!("TomatoDesk/", env!("CARGO_PKG_VERSION")),
+            )
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|error| GithubError::Request(error.to_string()))?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !response.status().is_success() {
+            return Err(response_error(response).await);
+        }
+        response
+            .text()
+            .await
+            .map(Some)
+            .map_err(|error| GithubError::Request(error.to_string()))
+    }
+
+    async fn send(&self, url: &Url) -> Result<Response, GithubError> {
+        self.request(url)
+            .send()
+            .await
+            .map_err(|error| GithubError::Request(error.to_string()))
+    }
+
+    /// 顺着 `Link: rel="next"` 翻页，`should_stop` 命中后不再请求下一页。
+    async fn get_pages<T, F>(&self, mut url: Url, mut should_stop: F) -> Result<Vec<T>, GithubError>
+    where
+        T: DeserializeOwned,
+        F: FnMut(&T) -> bool,
+    {
         let mut values = Vec::new();
-        let mut response_etag = None;
-        let mut is_first_page = true;
         loop {
-            let mut request = self
-                .client
-                .get(url.clone())
-                .header(header::ACCEPT, "application/vnd.github+json")
-                .header(header::USER_AGENT, USER_AGENT)
-                .bearer_auth(&self.token);
-            if is_first_page && let Some(etag) = etag {
-                request = request.header(header::IF_NONE_MATCH, etag);
-            }
-            let response = request
-                .send()
-                .await
-                .map_err(|error| GithubError::Request(error.to_string()))?;
-            let status = response.status();
-            if is_first_page {
-                response_etag = response
-                    .headers()
-                    .get(header::ETAG)
-                    .and_then(|value| value.to_str().ok())
-                    .map(ToOwned::to_owned);
-            }
-            if status == StatusCode::NOT_MODIFIED && is_first_page {
-                return Ok(GithubResponse {
-                    value: Vec::new(),
-                    etag: response_etag,
-                    not_modified: true,
-                });
-            }
-            if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-                if status == StatusCode::FORBIDDEN
-                    && response
-                        .headers()
-                        .get("x-ratelimit-remaining")
-                        .and_then(|value| value.to_str().ok())
-                        == Some("0")
-                {
-                    return Err(GithubError::RateLimited(
-                        response
-                            .headers()
-                            .get("x-ratelimit-reset")
-                            .and_then(|value| value.to_str().ok())
-                            .map(ToOwned::to_owned),
-                    ));
-                }
-                return if status == StatusCode::UNAUTHORIZED {
-                    Err(GithubError::Unauthorized)
-                } else {
-                    Err(GithubError::Api("Token 权限不足或仓库访问受限".into()))
-                };
-            }
-            if status == StatusCode::NOT_FOUND {
-                return Err(GithubError::NotFound);
-            }
-            if status == StatusCode::TOO_MANY_REQUESTS {
-                return Err(GithubError::RateLimited(
-                    response
-                        .headers()
-                        .get("retry-after")
-                        .and_then(|value| value.to_str().ok())
-                        .map(ToOwned::to_owned),
-                ));
-            }
-            if !status.is_success() {
-                let body = response.text().await.unwrap_or_default();
-                return Err(GithubError::Api(format!("HTTP {status}: {body}")));
+            let response = self.send(&url).await?;
+            if !response.status().is_success() {
+                return Err(response_error(response).await);
             }
             let next_url = response
                 .headers()
@@ -214,20 +324,56 @@ impl GithubClient {
                 .json::<Vec<T>>()
                 .await
                 .map_err(|error| GithubError::Api(error.to_string()))?;
+            let stop = page.iter().any(&mut should_stop);
             values.extend(page);
+            if stop {
+                break;
+            }
             let Some(next) = next_url else { break };
             url = Url::parse(&next).map_err(|error| GithubError::Api(error.to_string()))?;
             if url.scheme() != "https" || url.host_str() != Some("api.github.com") {
                 return Err(GithubError::Api("GitHub API 返回了无效的分页地址".into()));
             }
-            is_first_page = false;
         }
-        Ok(GithubResponse {
-            value: values,
-            etag: response_etag,
-            not_modified: false,
-        })
+        Ok(values)
     }
+}
+
+/// 把非 2xx 响应翻译成可读错误，限流与鉴权分开提示。
+async fn response_error(response: Response) -> GithubError {
+    let status = response.status();
+    let headers = response.headers().clone();
+    if status == StatusCode::UNAUTHORIZED {
+        return GithubError::Unauthorized;
+    }
+    if status == StatusCode::FORBIDDEN {
+        if headers
+            .get("x-ratelimit-remaining")
+            .and_then(|value| value.to_str().ok())
+            == Some("0")
+        {
+            return GithubError::RateLimited(
+                headers
+                    .get("x-ratelimit-reset")
+                    .and_then(|value| value.to_str().ok())
+                    .map(ToOwned::to_owned),
+            );
+        }
+        return GithubError::Api("Token 权限不足或仓库访问受限".into());
+    }
+    if status == StatusCode::NOT_FOUND {
+        return GithubError::NotFound;
+    }
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        return GithubError::RateLimited(
+            headers
+                .get("retry-after")
+                .and_then(|value| value.to_str().ok())
+                .map(ToOwned::to_owned),
+        );
+    }
+    let body = response.text().await.unwrap_or_default();
+    GithubError::Api(format!("HTTP {status}: {body}"))
 }
 
 fn endpoint(path: &str) -> Result<Url, GithubError> {
@@ -282,4 +428,40 @@ pub fn parse_repository_url(value: &str) -> Result<(String, String), GithubError
         ));
     }
     Ok((parts[0].to_owned(), name.to_owned()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{next_page_url, parse_repository_url};
+
+    #[test]
+    fn link_header_finds_only_the_next_page() {
+        let header = r#"<https://api.github.com/repos/o/n/pulls?page=2>; rel="next", <https://api.github.com/repos/o/n/pulls?page=5>; rel="last""#;
+        assert_eq!(
+            next_page_url(header),
+            Some("https://api.github.com/repos/o/n/pulls?page=2")
+        );
+        assert_eq!(
+            next_page_url(r#"<https://api.github.com/x?page=5>; rel="last""#),
+            None
+        );
+    }
+
+    #[test]
+    fn repository_urls_are_validated_strictly() {
+        let parsed = parse_repository_url("https://github.com/AbelTomato/TomatoDesk.git")
+            .expect("valid repository url");
+        assert_eq!(parsed, ("AbelTomato".to_owned(), "TomatoDesk".to_owned()));
+        for invalid in [
+            "http://github.com/owner/name",
+            "https://github.com/owner",
+            "https://github.com/owner/name?tab=readme",
+            "https://gitlab.com/owner/name",
+        ] {
+            assert!(
+                parse_repository_url(invalid).is_err(),
+                "{invalid} should be rejected"
+            );
+        }
+    }
 }

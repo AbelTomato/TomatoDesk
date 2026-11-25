@@ -116,7 +116,7 @@ pub async fn sync_github_repo(
     let result = application::github::sync_github_repo(&database, &id, &token, scope).await;
     match &result {
         Ok(summary) => {
-            let body = format!("同步完成，新增 {} 条更新。", summary.imported_count);
+            let body = format!("同步完成，{} 条内容有更新。", summary.changed_count);
             let _ = crate::platform::show_notification(&app, "GitHub 同步完成", &body);
         }
         Err(error) => {
@@ -134,14 +134,14 @@ pub async fn sync_all_github_repos(
     let result = application::github::sync_all_github_repos(&database).await;
     match &result {
         Ok(summaries) => {
-            let imported = summaries
+            let changed = summaries
                 .iter()
-                .map(|summary| summary.imported_count)
+                .map(|summary| summary.changed_count)
                 .sum::<usize>();
             let body = format!(
-                "检查 {} 个仓库，新增 {} 条更新。",
+                "检查 {} 个仓库，{} 条内容有更新。",
                 summaries.len(),
-                imported
+                changed
             );
             let _ = crate::platform::show_notification(&app, "GitHub 同步完成", &body);
         }

@@ -24,6 +24,7 @@ pub(crate) async fn capture_clipboard_content(
             summary: metadata.description,
             note,
             body: None,
+            repo_id: None,
         });
     }
 
@@ -35,6 +36,7 @@ pub(crate) async fn capture_clipboard_content(
         summary: None,
         note: Some(value),
         body: None,
+        repo_id: None,
     })
 }
 

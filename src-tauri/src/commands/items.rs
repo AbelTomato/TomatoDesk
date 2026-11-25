@@ -28,6 +28,7 @@ pub(super) fn create_item_in(database: &Database, input: CreateItemInput) -> Com
             summary: input.summary,
             note: input.note,
             body: None,
+            repo_id: input.repo_id,
         })
         .map_err(Into::into)
 }

@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
@@ -7,8 +8,8 @@ use std::{
 use rusqlite::{Connection, Transaction};
 
 use super::{
-    DbError, DbResult, GithubEventRepository, GithubRepoRepository, ItemRepository,
-    SyncRunRepository, TagRepository,
+    DbError, DbResult, GithubReleaseRepository, GithubRepoRepository, GithubThreadRepository,
+    ItemRepository, SyncRunRepository, TagRepository,
 };
 
 struct Migration {
@@ -28,12 +29,25 @@ const MIGRATIONS: &[Migration] = &[
         name: "item_body",
         sql: include_str!("../../../migrations/0002_item_body.sql"),
     },
+    Migration {
+        version: 3,
+        name: "repo_workspace",
+        sql: include_str!("../../../migrations/0003_repo_workspace.sql"),
+    },
 ];
+
+/// 本次启动执行了迁移时留下的痕迹，供前端提示「需要重新同步」。
+#[derive(Debug, Clone, Default)]
+struct MigrationNotice {
+    backup_path: Option<PathBuf>,
+    migrated_to: Option<i64>,
+}
 
 #[derive(Clone)]
 pub struct Database {
     connection: Arc<Mutex<Connection>>,
     path: Option<PathBuf>,
+    notice: Arc<Mutex<MigrationNotice>>,
 }
 
 impl Database {
@@ -50,6 +64,7 @@ impl Database {
         let database = Self {
             connection: Arc::new(Mutex::new(connection)),
             path: Some(path.to_path_buf()),
+            notice: Arc::new(Mutex::new(MigrationNotice::default())),
         };
         database.migrate()?;
         Ok(database)
@@ -59,6 +74,7 @@ impl Database {
         let database = Self {
             connection: Arc::new(Mutex::new(Connection::open_in_memory()?)),
             path: None,
+            notice: Arc::new(Mutex::new(MigrationNotice::default())),
         };
         database.migrate()?;
         Ok(database)
@@ -66,6 +82,22 @@ impl Database {
 
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
+    }
+
+    /// 本次启动因迁移产生的备份文件；没有执行迁移时为 `None`。
+    pub fn migration_backup(&self) -> Option<PathBuf> {
+        self.notice
+            .lock()
+            .ok()
+            .and_then(|notice| notice.backup_path.clone())
+    }
+
+    /// 本次启动把库迁移到的最高版本；没有执行迁移时为 `None`。
+    pub fn migrated_to(&self) -> Option<i64> {
+        self.notice
+            .lock()
+            .ok()
+            .and_then(|notice| notice.migrated_to)
     }
 
     pub fn migrate(&self) -> DbResult<()> {
@@ -79,24 +111,71 @@ impl Database {
                  );",
             )?;
 
-            for migration in MIGRATIONS {
-                let applied: bool = connection.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = ?1)",
-                    [migration.version],
-                    |row| row.get(0),
+            let applied = {
+                let mut statement = connection.prepare("SELECT version FROM schema_migrations")?;
+                let rows = statement.query_map([], |row| row.get::<_, i64>(0))?;
+                rows.collect::<Result<HashSet<i64>, _>>()?
+            };
+            let pending = MIGRATIONS
+                .iter()
+                .filter(|migration| !applied.contains(&migration.version))
+                .collect::<Vec<_>>();
+            if pending.is_empty() {
+                return Ok(());
+            }
+
+            // 已有数据的库先备份：0003 会删除旧 GitHub 条目，迁移失败也需要能回到原库。
+            let backup = if applied.is_empty() {
+                None
+            } else {
+                self.backup_database(connection, applied.iter().copied().max().unwrap_or(0))?
+            };
+
+            for migration in &pending {
+                let transaction = connection.transaction()?;
+                transaction.execute_batch(migration.sql)?;
+                transaction.execute(
+                    "INSERT INTO schema_migrations(version, name) VALUES (?1, ?2)",
+                    (migration.version, migration.name),
                 )?;
-                if !applied {
-                    let transaction = connection.transaction()?;
-                    transaction.execute_batch(migration.sql)?;
-                    transaction.execute(
-                        "INSERT INTO schema_migrations(version, name) VALUES (?1, ?2)",
-                        (migration.version, migration.name),
-                    )?;
-                    transaction.commit()?;
-                }
+                transaction.commit()?;
+            }
+
+            if let Ok(mut notice) = self.notice.lock() {
+                notice.backup_path = backup;
+                notice.migrated_to = pending.iter().map(|migration| migration.version).max();
             }
             Ok(())
         })
+    }
+
+    /// 复制一份当前数据库；内存库没有可备份的文件。
+    /// 优先用 `VACUUM INTO`，它产出的副本一致且不携带日志文件。
+    fn backup_database(
+        &self,
+        connection: &Connection,
+        from_version: i64,
+    ) -> DbResult<Option<PathBuf>> {
+        let Some(path) = self.path.as_deref() else {
+            return Ok(None);
+        };
+        let directory = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+            .join("backup");
+        fs::create_dir_all(&directory)?;
+
+        let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+        let target = directory.join(format!("tomatodesk-v{from_version}-{stamp}.sqlite3"));
+        let target_text = target.to_string_lossy().into_owned();
+        if connection
+            .execute("VACUUM INTO ?1", [&target_text])
+            .is_err()
+        {
+            fs::copy(path, &target)?;
+        }
+        Ok(Some(target))
     }
 
     pub fn items(&self) -> ItemRepository {
@@ -111,8 +190,12 @@ impl Database {
         GithubRepoRepository::new(self.clone())
     }
 
-    pub fn github_events(&self) -> GithubEventRepository {
-        GithubEventRepository::new(self.clone())
+    pub fn github_threads(&self) -> GithubThreadRepository {
+        GithubThreadRepository::new(self.clone())
+    }
+
+    pub fn github_releases(&self) -> GithubReleaseRepository {
+        GithubReleaseRepository::new(self.clone())
     }
 
     pub fn sync_runs(&self) -> SyncRunRepository {

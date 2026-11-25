@@ -4,10 +4,11 @@ use crate::{
     commands::{
         dto::{
             CountItemsInput, CreateItemInput, CreateTagInput, ItemIdInput, ListItemsPageInput,
-            SearchItemsInput, SetItemTagsInput, UpdateItemInput,
+            ListRepoThreadsInput, SearchItemsInput, SetItemTagsInput, UpdateItemInput,
+            UpdateRepoMetaInput,
         },
         error::CommandErrorCode,
-        items, tags,
+        items, repos, tags,
     },
     domain::{ItemKind, ItemSort, ItemStatus, ItemSummary},
     infrastructure::db::Database,
@@ -25,6 +26,7 @@ fn item_commands_support_create_list_search_update_and_archive() {
             title: Some("Rust handbook".into()),
             summary: None,
             note: Some("save this".into()),
+            repo_id: None,
         },
     )
     .unwrap();
@@ -45,6 +47,7 @@ fn item_commands_support_create_list_search_update_and_archive() {
         ListItemsPageInput {
             status: None,
             kind: None,
+            repo_id: None,
             sort: None,
             cursor: None,
             limit: None,
@@ -113,6 +116,7 @@ fn item_and_tag_commands_reject_invalid_input_with_a_stable_error_shape() {
             title: None,
             summary: None,
             note: Some("note".into()),
+            repo_id: None,
         },
     )
     .unwrap_err();
@@ -146,6 +150,7 @@ fn tag_commands_create_list_and_replace_item_tags() {
             title: Some("Tagged item".into()),
             summary: None,
             note: None,
+            repo_id: None,
         },
     )
     .unwrap();
@@ -237,6 +242,7 @@ fn item_pages_walk_with_keyset_cursors_and_counts_match_the_rows() {
                 title: Some(format!("Item {index}")),
                 summary: None,
                 note: None,
+                repo_id: None,
             },
         )
         .unwrap();
@@ -252,6 +258,7 @@ fn item_pages_walk_with_keyset_cursors_and_counts_match_the_rows() {
             ListItemsPageInput {
                 status: None,
                 kind: None,
+                repo_id: None,
                 sort: Some(ItemSort::Updated),
                 cursor: cursor.clone(),
                 limit: Some(2),
@@ -294,6 +301,7 @@ fn item_pages_reject_invalid_cursors_and_out_of_range_limits() {
         ListItemsPageInput {
             status: None,
             kind: None,
+            repo_id: None,
             sort: None,
             cursor: Some("not-a-cursor".into()),
             limit: None,
@@ -308,6 +316,7 @@ fn item_pages_reject_invalid_cursors_and_out_of_range_limits() {
             ListItemsPageInput {
                 status: None,
                 kind: None,
+                repo_id: None,
                 sort: None,
                 cursor: None,
                 limit: Some(limit),
@@ -316,4 +325,148 @@ fn item_pages_reject_invalid_cursors_and_out_of_range_limits() {
         .unwrap_err();
         assert_eq!(error.code, CommandErrorCode::Validation);
     }
+}
+
+#[test]
+fn repo_commands_expose_meta_and_reject_missing_threads() {
+    let database = Database::in_memory().unwrap();
+    let repo = database.github_repos().create("owner", "project").unwrap();
+
+    let summaries = repos::list_repos_in(&database).unwrap();
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].open_pull_requests, 0);
+    assert_eq!(summaries[0].description, None);
+
+    // 自定义描述优先展示，空字符串等于清除。
+    let detail = repos::update_repo_meta_in(
+        &database,
+        UpdateRepoMetaInput {
+            id: repo.id.clone(),
+            custom_description: Some("  我的项目  ".into()),
+            custom_note: Some("".into()),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        detail.repo.custom_description.as_deref(),
+        Some("我的项目"),
+        "values are trimmed"
+    );
+    assert_eq!(detail.repo.custom_note, None, "blank clears the note");
+    assert_eq!(
+        repos::list_repos_in(&database).unwrap()[0]
+            .description
+            .as_deref(),
+        Some("我的项目")
+    );
+
+    let page = repos::list_repo_threads_in(
+        &database,
+        ListRepoThreadsInput {
+            repo_id: repo.id.clone(),
+            kind: None,
+            state: None,
+            relationship: None,
+            cursor: None,
+            limit: None,
+        },
+    )
+    .unwrap();
+    assert!(page.threads.is_empty());
+    assert!(!page.has_more);
+
+    let error = repos::list_repo_threads_in(
+        &database,
+        ListRepoThreadsInput {
+            repo_id: repo.id,
+            kind: None,
+            state: None,
+            relationship: None,
+            cursor: Some("broken".into()),
+            limit: None,
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.code, CommandErrorCode::Validation);
+
+    let error = repos::get_thread_in(
+        &database,
+        ItemIdInput {
+            id: "missing".into(),
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.code, CommandErrorCode::NotFound);
+}
+
+#[test]
+fn items_can_be_scoped_to_a_repository() {
+    let database = Database::in_memory().unwrap();
+    let repo = database.github_repos().create("owner", "project").unwrap();
+    let created = items::create_item_in(
+        &database,
+        CreateItemInput {
+            kind: ItemKind::Note,
+            source: "repo".into(),
+            url: None,
+            title: Some("仓库笔记".into()),
+            summary: None,
+            note: Some("记一条".into()),
+            repo_id: Some(repo.id.clone()),
+        },
+    )
+    .unwrap();
+    assert_eq!(created.repo_id.as_deref(), Some(repo.id.as_str()));
+
+    let page = items::list_items_page_in(
+        &database,
+        ListItemsPageInput {
+            status: None,
+            kind: None,
+            repo_id: Some(repo.id.clone()),
+            sort: None,
+            cursor: None,
+            limit: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(page.items, vec![ItemSummary::from(&created)]);
+
+    let unscoped = items::list_items_page_in(
+        &database,
+        ListItemsPageInput {
+            status: None,
+            kind: None,
+            repo_id: None,
+            sort: None,
+            cursor: None,
+            limit: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        unscoped.items.len(),
+        1,
+        "the inbox still lists repo notes as personal items"
+    );
+
+    let updated = items::update_item_in(
+        &database,
+        UpdateItemInput {
+            id: created.id.clone(),
+            kind: ItemKind::Note,
+            source: "repo".into(),
+            url: None,
+            title: Some("仓库笔记".into()),
+            summary: None,
+            note: Some("改一条".into()),
+            status: ItemStatus::Processed,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        updated.repo_id.as_deref(),
+        Some(repo.id.as_str()),
+        "editing an item keeps its repository association"
+    );
 }
