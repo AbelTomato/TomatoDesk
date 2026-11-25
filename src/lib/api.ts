@@ -23,6 +23,12 @@ export interface AppInfo {
   environment: "development" | "production";
 }
 
+/** 本次启动执行了数据库迁移时的提示，`migratedTo` 为空表示无需提示。 */
+export interface MigrationNotice {
+  migratedTo: number | null;
+  backupPath: string | null;
+}
+
 export type ItemKind = "note" | "link" | "github";
 export type ItemStatus = "pending" | "processed" | "archived";
 export type ItemSort = "updated" | "created";
@@ -36,6 +42,8 @@ export interface ItemSummary {
   title: string | null;
   summary: string | null;
   note: string | null;
+  /** 挂在某个仓库下时指向该仓库。 */
+  repoId: string | null;
   status: ItemStatus;
   createdAt: string;
   updatedAt: string;
@@ -54,6 +62,7 @@ export interface ItemPage {
 export interface ItemPageInput {
   status?: ItemStatus | null;
   kind?: ItemKind | null;
+  repoId?: string | null;
   sort?: ItemSort;
   cursor?: string | null;
   limit?: number;
@@ -80,6 +89,7 @@ export interface CreateItemInput {
   title: string | null;
   summary: string | null;
   note: string | null;
+  repoId: string | null;
 }
 
 export interface CaptureItemInput {
@@ -87,9 +97,33 @@ export interface CaptureItemInput {
   note: string | null;
 }
 
-export interface UpdateItemInput extends CreateItemInput {
+/** 更新只改内容与状态；条目与仓库的关联在创建时确定，不随编辑变化。 */
+export interface UpdateItemInput {
   id: string;
+  kind: ItemKind;
+  source: string;
+  url: string | null;
+  title: string | null;
+  summary: string | null;
+  note: string | null;
   status: ItemStatus;
+}
+
+/**
+ * 列表行转成更新入参：后端拒绝未知字段，所以只挑 DTO 里的字段，
+ * 不能直接展开 `ItemSummary`（会带上 createdAt / updatedAt / repoId）。
+ */
+export function toUpdateItemInput(item: ItemSummary, status: ItemStatus): UpdateItemInput {
+  return {
+    id: item.id,
+    kind: item.kind,
+    source: item.source,
+    url: item.url,
+    title: item.title,
+    summary: item.summary,
+    note: item.note,
+    status,
+  };
 }
 
 export interface Tag {
@@ -111,8 +145,118 @@ export interface GithubRepo {
   enabled: boolean;
   lastSyncedAt: string | null;
   etag: string | null;
+  description: string | null;
+  homepage: string | null;
+  language: string | null;
+  stars: number | null;
+  forks: number | null;
+  openIssues: number | null;
+  defaultBranch: string | null;
+  pushedAt: string | null;
+  isArchived: boolean;
+  isPrivate: boolean;
+  /** README 原文，只在仓库概览里按需展示。 */
+  readmeText: string | null;
+  readmeSummary: string | null;
+  readmeSyncedAt: string | null;
+  customDescription: string | null;
+  customNote: string | null;
+  metaSyncedAt: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export type ThreadKind = "pull_request" | "issue";
+export type ThreadState = "open" | "draft" | "merged" | "closed";
+export type ThreadRelationship = "author" | "assigned" | "review_requested" | "reviewed" | "none";
+
+export interface ThreadSummary {
+  id: string;
+  repoId: string;
+  kind: ThreadKind;
+  number: number;
+  title: string;
+  state: ThreadState;
+  author: string | null;
+  url: string;
+  summary: string | null;
+  isAuthor: boolean;
+  isAssigned: boolean;
+  reviewRequested: boolean;
+  reviewed: boolean;
+  commentCount: number;
+  additions: number | null;
+  deletions: number | null;
+  changedFiles: number | null;
+  createdAt: string;
+  updatedAt: string;
+  closedAt: string | null;
+  mergedAt: string | null;
+}
+
+export interface ThreadDetail extends ThreadSummary {
+  body: string | null;
+}
+
+export interface ThreadPage {
+  threads: ThreadSummary[];
+  nextCursor: string | null;
+  hasMore: boolean;
+}
+
+export interface ThreadPageInput {
+  repoId: string;
+  kind?: ThreadKind | null;
+  state?: ThreadState | null;
+  relationship?: ThreadRelationship | null;
+  cursor?: string | null;
+  limit?: number;
+}
+
+export interface RepoThreadCounts {
+  openPullRequests: number;
+  openIssues: number;
+  reviews: number;
+  releases: number;
+  items: number;
+}
+
+export interface RepoSummary {
+  id: string;
+  owner: string;
+  name: string;
+  /** 展示用描述：自定义优先。 */
+  description: string | null;
+  language: string | null;
+  stars: number | null;
+  openPullRequests: number;
+  openIssues: number;
+  reviews: number;
+  releases: number;
+  items: number;
+  enabled: boolean;
+  lastSyncedAt: string | null;
+  isArchived: boolean;
+  isPrivate: boolean;
+}
+
+export interface RepoDetail extends GithubRepo {
+  counts: RepoThreadCounts;
+}
+
+export interface GithubRelease {
+  id: string;
+  repoId: string;
+  tagName: string;
+  name: string | null;
+  url: string;
+  body: string | null;
+  summary: string | null;
+  isDraft: boolean;
+  isPrerelease: boolean;
+  publishedAt: string | null;
+  createdAt: string;
+  syncedAt: string;
 }
 
 export interface GithubSyncRun {
@@ -126,9 +270,10 @@ export interface GithubSyncRun {
 
 export interface GithubSyncSummary {
   repoId: string;
-  importedCount: number;
+  threadsCount: number;
   releasesCount: number;
-  issuesCount: number;
+  /** 新增或内容变化的行数，0 即没有变化。 */
+  changedCount: number;
   notModified: boolean;
   syncedAt: string;
 }
@@ -169,6 +314,10 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
 
 export function getAppInfo(): Promise<AppInfo> {
   return call("get_app_info");
+}
+
+export function getMigrationNotice(): Promise<MigrationNotice> {
+  return call("get_migration_notice");
 }
 
 export function createItem(input: CreateItemInput): Promise<Item> {
@@ -272,6 +421,35 @@ export function syncAllGithubRepos(): Promise<GithubSyncSummary[]> {
 
 export function listGithubSyncRuns(): Promise<GithubSyncRun[]> {
   return call("list_github_sync_runs");
+}
+
+export function listRepos(): Promise<RepoSummary[]> {
+  return call("list_repos");
+}
+
+export function getRepo(id: string): Promise<RepoDetail> {
+  return call("get_repo", { input: { id } });
+}
+
+/** 自定义描述与备注；传空字符串表示清除。 */
+export function updateRepoMeta(input: {
+  id: string;
+  customDescription: string | null;
+  customNote: string | null;
+}): Promise<RepoDetail> {
+  return call("update_repo_meta", { input });
+}
+
+export function listRepoThreads(input: ThreadPageInput): Promise<ThreadPage> {
+  return call("list_repo_threads", { input });
+}
+
+export function getThread(id: string): Promise<ThreadDetail> {
+  return call("get_thread", { input: { id } });
+}
+
+export function listRepoReleases(repoId: string): Promise<GithubRelease[]> {
+  return call("list_repo_releases", { input: { id: repoId } });
 }
 
 export function exportItemsJson(): Promise<ExportResult | null> {

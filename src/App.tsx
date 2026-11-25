@@ -1,9 +1,9 @@
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
+import AppShell from "./app/AppShell";
 import QuickCapture from "./features/capture/QuickCapture";
 import StyleGuide from "./features/dev/StyleGuide";
-import Inbox from "./features/inbox/Inbox";
 
 const showStyleGuide =
   import.meta.env.DEV && new URLSearchParams(window.location.search).has("styleguide");
@@ -17,11 +17,7 @@ function App() {
     return <QuickCapture />;
   }
 
-  return <MainApp />;
-}
-
-function MainApp() {
-  return <Inbox />;
+  return <AppShell />;
 }
 
 export default App;
