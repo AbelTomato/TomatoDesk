@@ -29,11 +29,14 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 scraper = "0.24"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 keyring = { version = "3", features = ["windows-native"] }
-tokio = { version = "1", features = ["time"] }
+tokio = { version = "1", features = ["rt", "time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.37", features = ["bundled"] }
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4", "v5"] }
+imap = "2.4.1"
+mail-parser = { version = "1.0.2", features = ["full_encoding"] }
+native-tls = "0.2.18"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
