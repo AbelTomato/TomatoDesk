@@ -9,7 +9,7 @@ use rusqlite::{Connection, Transaction};
 
 use super::{
     CaptureRepository, DbError, DbResult, GithubReleaseRepository, GithubRepoRepository,
-    GithubThreadRepository, SyncRunRepository, TagRepository,
+    GithubThreadRepository, SyncRunRepository, TagRepository, TaskRepository,
 };
 
 struct Migration {
@@ -50,6 +50,12 @@ const MIGRATIONS: &[Migration] = &[
         name: "capture_module",
         sql: include_str!("../../../migrations/0005_capture_module.sql"),
         message: Some("收集已独立为「随手记」：原来的「已处理」状态已取消，相关条目归为未归档。"),
+    },
+    Migration {
+        version: 6,
+        name: "tasks",
+        sql: include_str!("../../../migrations/0006_tasks.sql"),
+        message: None,
     },
 ];
 
@@ -231,6 +237,10 @@ impl Database {
 
     pub fn sync_runs(&self) -> SyncRunRepository {
         SyncRunRepository::new(self.clone())
+    }
+
+    pub fn tasks(&self) -> TaskRepository {
+        TaskRepository::new(self.clone())
     }
 
     pub(super) fn connection(&self) -> DbResult<MutexGuard<'_, Connection>> {

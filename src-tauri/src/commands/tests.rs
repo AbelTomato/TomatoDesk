@@ -4,14 +4,14 @@ use crate::{
     commands::{
         captures,
         dto::{
-            CountCapturesInput, CreateCaptureInput, CreateTagInput, IdInput, ListCapturesPageInput,
-            ListRepoThreadsInput, SearchCapturesInput, SetCaptureTagsInput, UpdateCaptureInput,
-            UpdateRepoMetaInput,
+            CountCapturesInput, CreateCaptureInput, CreateTagInput, CreateTaskInput, IdInput,
+            ListCapturesPageInput, ListRepoThreadsInput, ListTasksPageInput, SearchCapturesInput,
+            SetCaptureTagsInput, UpdateCaptureInput, UpdateRepoMetaInput, UpdateTaskInput,
         },
         error::CommandErrorCode,
-        repos, tags,
+        repos, tags, tasks,
     },
-    domain::{CaptureKind, CaptureSort, CaptureSummary},
+    domain::{CaptureKind, CaptureSort, CaptureSummary, TaskStatus},
     infrastructure::db::Database,
 };
 
@@ -517,3 +517,123 @@ fn captures_can_be_scoped_to_a_repository() {
     );
 }
 
+#[test]
+fn task_commands_create_update_and_walk_the_status_flow() {
+    let database = Database::in_memory().unwrap();
+    let created = tasks::create_task_in(
+        &database,
+        CreateTaskInput {
+            title: " 写阶段二测试 ".into(),
+            note: Some("   ".into()),
+        },
+    )
+    .unwrap();
+    assert_eq!(created.title, "写阶段二测试");
+    assert_eq!(created.note, None, "blank note is folded to None");
+    assert_eq!(created.origin_kind.as_deref(), Some("manual"));
+    assert_eq!(created.status, TaskStatus::Open);
+
+    let updated = tasks::update_task_in(
+        &database,
+        UpdateTaskInput {
+            id: created.id.clone(),
+            title: "写接线测试".into(),
+            note: Some("覆盖命令层".into()),
+        },
+    )
+    .unwrap();
+    assert_eq!(updated.title, "写接线测试");
+    assert_eq!(updated.note.as_deref(), Some("覆盖命令层"));
+    assert_eq!(updated.status, TaskStatus::Open, "editing keeps the status");
+
+    let done = tasks::complete_task_in(
+        &database,
+        IdInput {
+            id: created.id.clone(),
+        },
+    )
+    .unwrap();
+    assert_eq!(done.status, TaskStatus::Done);
+    assert!(done.completed_at.is_some());
+
+    let reopened = tasks::reopen_task_in(
+        &database,
+        IdInput {
+            id: created.id.clone(),
+        },
+    )
+    .unwrap();
+    assert_eq!(reopened.status, TaskStatus::Open);
+    assert_eq!(reopened.completed_at, None);
+
+    let cancelled = tasks::cancel_task_in(
+        &database,
+        IdInput {
+            id: created.id.clone(),
+        },
+    )
+    .unwrap();
+    assert_eq!(cancelled.status, TaskStatus::Cancelled);
+
+    let counts = tasks::count_tasks_in(&database).unwrap();
+    assert_eq!(
+        (counts.all, counts.open, counts.done, counts.cancelled),
+        (1, 0, 0, 1),
+        "counts follow the current status"
+    );
+
+    let page = tasks::list_tasks_page_in(
+        &database,
+        ListTasksPageInput {
+            status: Some(TaskStatus::Cancelled),
+            cursor: None,
+            limit: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(page.tasks, vec![cancelled]);
+
+    let error = tasks::update_task_in(
+        &database,
+        UpdateTaskInput {
+            id: "missing".into(),
+            title: "x".into(),
+            note: None,
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.code, CommandErrorCode::NotFound);
+
+    let error = tasks::create_task_in(
+        &database,
+        CreateTaskInput {
+            title: "   ".into(),
+            note: None,
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.code, CommandErrorCode::Validation);
+    assert_eq!(error.message, "title cannot be empty");
+
+    let error = tasks::list_tasks_page_in(
+        &database,
+        ListTasksPageInput {
+            status: None,
+            cursor: Some("not-a-cursor".into()),
+            limit: None,
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.code, CommandErrorCode::Validation);
+
+    let error = tasks::list_tasks_page_in(
+        &database,
+        ListTasksPageInput {
+            status: None,
+            cursor: None,
+            limit: Some(0),
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.code, CommandErrorCode::Validation);
+}

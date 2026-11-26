@@ -1,8 +1,9 @@
 use super::Database;
 use crate::domain::{
     CaptureKind, CapturePageQuery, CaptureSort, CaptureSummary, GithubRelease, GithubThread,
-    GithubThreadComment, KeysetCursor, NewCapture, NewSyncRun, SyncRunStatus, ThreadKind,
-    ThreadQuery, ThreadRelationship, ThreadState, ThreadSummary,
+    GithubThreadComment, KeysetCursor, NewCapture, NewSyncRun, NewTask, SyncRunStatus,
+    TaskPageQuery, TaskStatus, ThreadKind, ThreadQuery, ThreadRelationship, ThreadState,
+    ThreadSummary,
 };
 use uuid::Uuid;
 
@@ -77,7 +78,7 @@ fn migrations_are_idempotent_and_captures_support_crud() {
             )
         })
         .unwrap();
-    assert_eq!(migration_count, 5);
+    assert_eq!(migration_count, 6);
     let captures = db.captures();
     let created = captures
         .create(capture("First title", "first body"))
@@ -659,3 +660,118 @@ fn capture_migration_maps_status_note_body_and_tags() {
     assert_eq!(tag_links, 1, "tag links survive the rename");
 }
 
+fn new_task(title: &str, origin_kind: Option<&str>, origin_id: Option<&str>) -> NewTask {
+    NewTask {
+        title: title.into(),
+        note: None,
+        origin_kind: origin_kind.map(Into::into),
+        origin_id: origin_id.map(Into::into),
+    }
+}
+
+#[test]
+fn task_repository_tracks_status_counts_and_completion_time() {
+    let db = Database::in_memory().unwrap();
+    let tasks = db.tasks();
+
+    let first = tasks
+        .create(new_task("写阶段二", Some("manual"), None))
+        .unwrap();
+    let second = tasks
+        .create(new_task("整理文档", Some("manual"), None))
+        .unwrap();
+    assert_eq!(first.status, TaskStatus::Open);
+    assert_eq!(first.completed_at, None);
+
+    let page = tasks
+        .page(&TaskPageQuery {
+            status: None,
+            cursor: None,
+            limit: 50,
+        })
+        .unwrap();
+    assert_eq!(page.tasks.len(), 2);
+    assert!(!page.has_more);
+
+    let done = tasks
+        .set_status(&first.id, TaskStatus::Done)
+        .unwrap()
+        .unwrap();
+    let completed_at = done.completed_at.clone().expect("completing stamps a time");
+    let done_again = tasks
+        .set_status(&first.id, TaskStatus::Done)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        done_again.completed_at,
+        Some(completed_at),
+        "completing twice keeps the first completion time"
+    );
+
+    let cancelled = tasks
+        .set_status(&first.id, TaskStatus::Cancelled)
+        .unwrap()
+        .unwrap();
+    assert_eq!(cancelled.status, TaskStatus::Cancelled);
+    assert_eq!(cancelled.completed_at, None, "cancelling clears completion");
+
+    let reopened = tasks
+        .set_status(&first.id, TaskStatus::Open)
+        .unwrap()
+        .unwrap();
+    assert_eq!(reopened.status, TaskStatus::Open);
+    assert_eq!(reopened.completed_at, None);
+
+    let updated = tasks
+        .update(&second.id, "整理发布说明", Some("改标题"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated.title, "整理发布说明");
+    assert_eq!(updated.note.as_deref(), Some("改标题"));
+
+    let counts = tasks.counts().unwrap();
+    assert_eq!(
+        (counts.all, counts.open, counts.done, counts.cancelled),
+        (2, 2, 0, 0)
+    );
+
+    let done_page = tasks
+        .page(&TaskPageQuery {
+            status: Some(TaskStatus::Done),
+            cursor: None,
+            limit: 50,
+        })
+        .unwrap();
+    assert!(done_page.tasks.is_empty(), "status filter runs in SQL");
+
+    assert!(
+        tasks
+            .set_status("missing", TaskStatus::Done)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        tasks.create(new_task("   ", Some("manual"), None)).is_err(),
+        "blank titles are rejected"
+    );
+}
+
+#[test]
+fn task_origin_index_allows_only_one_task_per_inbox_message() {
+    let db = Database::in_memory().unwrap();
+    let tasks = db.tasks();
+    let origin = new_task("来自收件箱", Some("inbox"), Some("message-1"));
+
+    let created = tasks.create(origin.clone()).unwrap();
+    assert_eq!(created.origin_kind.as_deref(), Some("inbox"));
+    assert!(
+        tasks.create(origin).is_err(),
+        "the unique index blocks a second task for the same message"
+    );
+
+    let manual = new_task("手动待办", Some("manual"), Some("message-1"));
+    assert!(
+        tasks.create(manual).is_ok(),
+        "the unique index only covers inbox origins"
+    );
+}

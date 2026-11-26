@@ -4,8 +4,8 @@ use serde_json::Value;
 use crate::{
     commands::error::{CommandError, CommandResult},
     domain::{
-        CaptureCursor, CaptureKind, CapturePageQuery, CaptureSort, ThreadKind, ThreadQuery,
-        ThreadRelationship, ThreadState,
+        CaptureCursor, CaptureKind, CapturePageQuery, CaptureSort, TaskCursor, TaskPageQuery,
+        TaskStatus, ThreadKind, ThreadQuery, ThreadRelationship, ThreadState,
     },
 };
 
@@ -16,6 +16,7 @@ const MAX_CAPTURE_LENGTH: usize = 16_384;
 const MAX_TOKEN_LENGTH: usize = 512;
 const MAX_DESCRIPTION_LENGTH: usize = 4_096;
 const MAX_NOTE_LENGTH: usize = 16_384;
+const MAX_TASK_TITLE_LENGTH: usize = 512;
 const DEFAULT_PAGE_SIZE: u32 = 50;
 const MAX_PAGE_SIZE: u32 = 200;
 
@@ -304,6 +305,72 @@ impl ThreadCommentsInput {
     pub(super) fn validate(self) -> CommandResult<(String, bool)> {
         let id = required_text("id", self.id, MAX_ID_LENGTH)?;
         Ok((id, self.force.unwrap_or(false)))
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateTaskInput {
+    pub title: String,
+    pub note: Option<String>,
+}
+
+impl CreateTaskInput {
+    pub(super) fn validate(self) -> CommandResult<(String, Option<String>)> {
+        Ok((
+            required_text("title", self.title, MAX_TASK_TITLE_LENGTH)?,
+            optional_text("note", self.note, MAX_NOTE_LENGTH)?,
+        ))
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateTaskInput {
+    pub id: String,
+    pub title: String,
+    pub note: Option<String>,
+}
+
+impl UpdateTaskInput {
+    pub(super) fn validate(self) -> CommandResult<(String, String, Option<String>)> {
+        Ok((
+            required_text("id", self.id, MAX_ID_LENGTH)?,
+            required_text("title", self.title, MAX_TASK_TITLE_LENGTH)?,
+            optional_text("note", self.note, MAX_NOTE_LENGTH)?,
+        ))
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListTasksPageInput {
+    /// `None` 表示全部。
+    pub status: Option<TaskStatus>,
+    pub cursor: Option<String>,
+    pub limit: Option<u32>,
+}
+
+impl ListTasksPageInput {
+    pub(super) fn into_query(self) -> CommandResult<TaskPageQuery> {
+        let limit = self.limit.unwrap_or(DEFAULT_PAGE_SIZE);
+        if limit == 0 || limit > MAX_PAGE_SIZE {
+            return Err(CommandError::validation(format!(
+                "limit must be between 1 and {MAX_PAGE_SIZE}"
+            )));
+        }
+        let cursor =
+            match self.cursor.as_deref().map(str::trim) {
+                Some(raw) if !raw.is_empty() => Some(TaskCursor::parse(raw).ok_or_else(|| {
+                    CommandError::validation("cursor is invalid, reload the list")
+                })?),
+                _ => None,
+            };
+        Ok(TaskPageQuery {
+            status: self.status,
+            cursor,
+            limit,
+        })
     }
 }
 

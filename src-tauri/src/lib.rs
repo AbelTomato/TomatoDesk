@@ -58,6 +58,13 @@ pub fn run() {
             commands::get_thread,
             commands::refresh_thread_comments,
             commands::list_repo_releases,
+            commands::create_task,
+            commands::list_tasks_page,
+            commands::count_tasks,
+            commands::update_task,
+            commands::complete_task,
+            commands::cancel_task,
+            commands::reopen_task,
             commands::export_captures_json,
             commands::export_captures_markdown
         ])

@@ -6,7 +6,7 @@ pub use database::Database;
 pub use error::{DbError, DbResult};
 pub use repositories::{
     CaptureRepository, GithubReleaseRepository, GithubRepoRepository, GithubThreadRepository,
-    SyncRunRepository, TagRepository,
+    SyncRunRepository, TagRepository, TaskRepository,
 };
 
 #[cfg(test)]

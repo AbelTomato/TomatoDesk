@@ -3,6 +3,7 @@ mod cursor;
 mod github;
 mod sync_run;
 mod tag;
+mod task;
 
 pub use capture::{
     Capture, CaptureBody, CaptureCounts, CaptureCursor, CaptureKind, CapturePage, CapturePageQuery,
@@ -17,3 +18,4 @@ pub use github::{
 };
 pub use sync_run::{NewSyncRun, SyncRun, SyncRunStatus};
 pub use tag::Tag;
+pub use task::{NewTask, Task, TaskCounts, TaskCursor, TaskPage, TaskPageQuery, TaskStatus};

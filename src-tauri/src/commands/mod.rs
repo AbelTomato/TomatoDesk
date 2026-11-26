@@ -7,6 +7,7 @@ mod github;
 mod quick_capture;
 mod repos;
 mod tags;
+mod tasks;
 
 #[cfg(test)]
 mod tests;
@@ -18,3 +19,4 @@ pub use github::*;
 pub use quick_capture::*;
 pub use repos::*;
 pub use tags::*;
+pub use tasks::*;
