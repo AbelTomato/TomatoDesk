@@ -65,6 +65,14 @@ pub fn run() {
             commands::complete_task,
             commands::cancel_task,
             commands::reopen_task,
+            commands::list_inbox_messages_page,
+            commands::count_inbox_pending,
+            commands::list_inbox_sources,
+            commands::mark_inbox_message_read,
+            commands::mark_inbox_message_unread,
+            commands::dismiss_inbox_message,
+            commands::convert_inbox_message_to_task,
+            commands::ingest_inbox_message,
             commands::export_captures_json,
             commands::export_captures_markdown
         ])

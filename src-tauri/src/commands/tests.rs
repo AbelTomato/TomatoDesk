@@ -5,13 +5,16 @@ use crate::{
         captures,
         dto::{
             CountCapturesInput, CreateCaptureInput, CreateTagInput, CreateTaskInput, IdInput,
-            ListCapturesPageInput, ListRepoThreadsInput, ListTasksPageInput, SearchCapturesInput,
-            SetCaptureTagsInput, UpdateCaptureInput, UpdateRepoMetaInput, UpdateTaskInput,
+            IngestInboxMessageInput, ListCapturesPageInput, ListInboxMessagesInput,
+            ListRepoThreadsInput, ListTasksPageInput, SearchCapturesInput, SetCaptureTagsInput,
+            UpdateCaptureInput, UpdateRepoMetaInput, UpdateTaskInput,
         },
         error::CommandErrorCode,
-        repos, tags, tasks,
+        inbox, repos, tags, tasks,
     },
-    domain::{CaptureKind, CaptureSort, CaptureSummary, TaskStatus},
+    domain::{
+        CaptureKind, CaptureSort, CaptureSummary, InboxSourceKind, TaskStatus, TriageOutcome,
+    },
     infrastructure::db::Database,
 };
 
@@ -636,4 +639,198 @@ fn task_commands_create_update_and_walk_the_status_flow() {
     )
     .unwrap_err();
     assert_eq!(error.code, CommandErrorCode::Validation);
+}
+
+fn inbox_input(
+    external_id: &str,
+    category: &str,
+    title: &str,
+    hour: u32,
+) -> IngestInboxMessageInput {
+    let occurred_at = format!("2026-11-26T{hour:02}:00:00.000Z");
+    IngestInboxMessageInput {
+        external_id: external_id.into(),
+        external_updated_at: Some(occurred_at.clone()),
+        category: category.into(),
+        title: title.into(),
+        summary: Some("摘要".into()),
+        body: None,
+        url: Some(format!("https://example.com/{external_id}")),
+        actor: Some("reviewer".into()),
+        occurred_at: Some(occurred_at),
+        related_kind: None,
+        related_id: None,
+        payload_json: None,
+    }
+}
+
+#[test]
+fn inbox_commands_ingest_triage_and_convert_exactly_once() {
+    let database = Database::in_memory().unwrap();
+    let mut ids = Vec::new();
+    for (index, category) in ["mention", "ci_failed", "release"].iter().enumerate() {
+        let message = inbox::ingest_inbox_message_in(
+            &database,
+            inbox_input(
+                &format!("notice-{index}"),
+                category,
+                &format!("通知 {index}"),
+                index as u32,
+            ),
+        )
+        .unwrap();
+        assert_eq!(message.read_at, None);
+        assert_eq!(message.triaged_at, None);
+        ids.push(message.id);
+    }
+
+    let counts = inbox::count_inbox_pending_in(&database).unwrap();
+    assert_eq!(
+        (counts.all, counts.pending, counts.unread),
+        (3, 3, 3),
+        "every ingested message starts pending and unread"
+    );
+
+    let sources = inbox::list_inbox_sources_in(&database).unwrap();
+    assert_eq!(sources.len(), 1, "manual source is reused across ingests");
+    assert_eq!(sources[0].kind, InboxSourceKind::Manual);
+
+    let read =
+        inbox::mark_inbox_message_read_in(&database, IdInput { id: ids[0].clone() }).unwrap();
+    assert!(
+        read.read_at.is_some(),
+        "read stamps read_at, not triaged_at"
+    );
+    assert_eq!(read.triaged_at, None);
+    assert_eq!(inbox::count_inbox_pending_in(&database).unwrap().unread, 2);
+
+    let unread =
+        inbox::mark_inbox_message_unread_in(&database, IdInput { id: ids[0].clone() }).unwrap();
+    assert_eq!(unread.read_at, None);
+
+    let page = inbox::list_inbox_messages_page_in(
+        &database,
+        ListInboxMessagesInput {
+            triaged: Some(false),
+            unread_only: true,
+            category: None,
+            source_id: None,
+            cursor: None,
+            limit: Some(2),
+        },
+    )
+    .unwrap();
+    assert_eq!(page.messages.len(), 2);
+    assert!(
+        page.has_more,
+        "three messages do not fit in one page of two"
+    );
+    let next = inbox::list_inbox_messages_page_in(
+        &database,
+        ListInboxMessagesInput {
+            triaged: Some(false),
+            unread_only: true,
+            category: None,
+            source_id: None,
+            cursor: page.next_cursor,
+            limit: Some(2),
+        },
+    )
+    .unwrap();
+    assert_eq!(next.messages.len(), 1, "cursor walks to the last page");
+    assert!(!next.has_more);
+
+    let filtered = inbox::list_inbox_messages_page_in(
+        &database,
+        ListInboxMessagesInput {
+            triaged: None,
+            unread_only: false,
+            category: Some("release".into()),
+            source_id: None,
+            cursor: None,
+            limit: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(filtered.messages.len(), 1, "category filter reaches SQL");
+
+    let dismissed =
+        inbox::dismiss_inbox_message_in(&database, IdInput { id: ids[0].clone() }).unwrap();
+    assert_eq!(dismissed.triage_outcome, Some(TriageOutcome::Dismissed));
+    assert!(dismissed.triaged_at.is_some());
+    assert_eq!(inbox::count_inbox_pending_in(&database).unwrap().pending, 2);
+
+    let task =
+        inbox::convert_inbox_message_to_task_in(&database, IdInput { id: ids[1].clone() }).unwrap();
+    assert_eq!(task.title, "通知 1");
+    assert_eq!(task.origin_kind.as_deref(), Some("inbox"));
+    assert_eq!(task.origin_id.as_deref(), Some(ids[1].as_str()));
+    assert_eq!(
+        task.note.as_deref(),
+        Some("摘要\n\nhttps://example.com/notice-1"),
+        "the task note carries the summary and the source link"
+    );
+
+    let triaged = inbox::list_inbox_messages_page_in(
+        &database,
+        ListInboxMessagesInput {
+            triaged: Some(true),
+            unread_only: false,
+            category: None,
+            source_id: None,
+            cursor: None,
+            limit: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        triaged.messages.len(),
+        2,
+        "dismiss and convert both count as triaged"
+    );
+
+    let again =
+        inbox::convert_inbox_message_to_task_in(&database, IdInput { id: ids[1].clone() }).unwrap();
+    assert_eq!(again.id, task.id, "repeat conversion returns the same task");
+
+    let error = inbox::convert_inbox_message_to_task_in(&database, IdInput { id: ids[0].clone() })
+        .unwrap_err();
+    assert_eq!(
+        error.code,
+        CommandErrorCode::Validation,
+        "a dismissed message cannot be converted"
+    );
+
+    let revived = inbox::ingest_inbox_message_in(
+        &database,
+        inbox_input("notice-0", "mention", "通知 0（更新）", 5),
+    )
+    .unwrap();
+    assert_eq!(
+        revived.triage_outcome,
+        Some(TriageOutcome::Dismissed),
+        "re-ingest keeps the triage result"
+    );
+
+    let error = inbox::ingest_inbox_message_in(
+        &database,
+        IngestInboxMessageInput {
+            title: "   ".into(),
+            ..inbox_input("notice-blank", "mention", "占位", 6)
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.code, CommandErrorCode::Validation);
+    assert_eq!(error.message, "title cannot be empty");
+
+    let error = inbox::ingest_inbox_message_in(
+        &database,
+        IngestInboxMessageInput {
+            payload_json: Some("{not json".into()),
+            ..inbox_input("notice-payload", "mention", "坏 payload", 7)
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.code, CommandErrorCode::Validation);
+    assert_eq!(error.message, "payloadJson must be valid JSON");
 }

@@ -1,9 +1,9 @@
-use super::Database;
+use super::{Database, MANUAL_SOURCE_ID};
 use crate::domain::{
     CaptureKind, CapturePageQuery, CaptureSort, CaptureSummary, GithubRelease, GithubThread,
-    GithubThreadComment, KeysetCursor, NewCapture, NewSyncRun, NewTask, SyncRunStatus,
-    TaskPageQuery, TaskStatus, ThreadKind, ThreadQuery, ThreadRelationship, ThreadState,
-    ThreadSummary,
+    GithubThreadComment, KeysetCursor, NewCapture, NewInboxMessage, NewSyncRun, NewTask,
+    SyncRunStatus, TaskPageQuery, TaskStatus, ThreadKind, ThreadQuery, ThreadRelationship,
+    ThreadState, ThreadSummary, TriageOutcome,
 };
 use uuid::Uuid;
 
@@ -78,7 +78,7 @@ fn migrations_are_idempotent_and_captures_support_crud() {
             )
         })
         .unwrap();
-    assert_eq!(migration_count, 6);
+    assert_eq!(migration_count, 7);
     let captures = db.captures();
     let created = captures
         .create(capture("First title", "first body"))
@@ -774,4 +774,202 @@ fn task_origin_index_allows_only_one_task_per_inbox_message() {
         tasks.create(manual).is_ok(),
         "the unique index only covers inbox origins"
     );
+}
+
+fn inbox_message(external_id: &str, title: &str, updated_at: &str) -> NewInboxMessage {
+    NewInboxMessage {
+        source_id: MANUAL_SOURCE_ID.into(),
+        external_id: external_id.into(),
+        external_updated_at: Some(updated_at.into()),
+        category: "mention".into(),
+        title: title.into(),
+        summary: Some("摘要".into()),
+        body: None,
+        url: Some(format!("https://example.com/{external_id}")),
+        actor: Some("reviewer".into()),
+        occurred_at: Some(updated_at.into()),
+        related_kind: None,
+        related_id: None,
+        payload_json: None,
+    }
+}
+
+#[test]
+fn inbox_repository_dedupes_messages_and_converts_once() {
+    let db = Database::in_memory().unwrap();
+    let sources = db.inbox_sources();
+    let source = sources.ensure_manual().unwrap();
+    assert_eq!(source.id, MANUAL_SOURCE_ID);
+    assert_eq!(sources.ensure_manual().unwrap().id, source.id);
+    assert_eq!(sources.list().unwrap().len(), 1, "manual source is reused");
+
+    let messages = db.inbox_messages();
+    let created = messages
+        .ingest(inbox_message(
+            "notice-1",
+            "被 @ 了",
+            "2026-11-26T01:00:00.000Z",
+        ))
+        .unwrap();
+    assert_eq!(created.triaged_at, None);
+
+    let updated = messages
+        .ingest(inbox_message(
+            "notice-1",
+            "被 @ 了（更新）",
+            "2026-11-26T02:00:00.000Z",
+        ))
+        .unwrap();
+    assert_eq!(updated.id, created.id, "the same key updates in place");
+    assert_eq!(updated.title, "被 @ 了（更新）");
+    assert_eq!(messages.counts().unwrap().all, 1);
+
+    messages.set_read(&updated.id, true).unwrap();
+    let unchanged = messages
+        .ingest(inbox_message(
+            "notice-1",
+            "被 @ 了（更新）",
+            "2026-11-26T02:00:00.000Z",
+        ))
+        .unwrap();
+    assert!(
+        unchanged.read_at.is_some(),
+        "a sync without new progress keeps the message read"
+    );
+
+    let task = messages
+        .to_task(
+            &updated.id,
+            NewTask {
+                title: updated.title.clone(),
+                note: Some("摘要".into()),
+                origin_kind: Some("inbox".into()),
+                origin_id: Some(updated.id.clone()),
+            },
+        )
+        .unwrap();
+    assert_eq!(task.origin_id.as_deref(), Some(updated.id.as_str()));
+
+    let triaged = messages.get(&updated.id).unwrap().unwrap();
+    assert_eq!(triaged.triage_outcome, Some(TriageOutcome::Task));
+    assert_eq!(triaged.triage_ref_id.as_deref(), Some(task.id.as_str()));
+    assert_eq!(
+        triaged.read_at, unchanged.read_at,
+        "triage keeps read state"
+    );
+
+    assert!(
+        messages
+            .to_task(
+                &updated.id,
+                NewTask {
+                    title: "重复转换".into(),
+                    note: None,
+                    origin_kind: Some("inbox".into()),
+                    origin_id: Some(updated.id.clone()),
+                },
+            )
+            .is_err(),
+        "a second conversion rolls back instead of creating another task"
+    );
+    assert_eq!(
+        db.tasks().counts().unwrap().all,
+        1,
+        "only one task exists after a rejected conversion"
+    );
+
+    let dismissed = messages
+        .ingest(inbox_message(
+            "notice-2",
+            "可以忽略",
+            "2026-11-26T03:00:00.000Z",
+        ))
+        .unwrap();
+    let dismissed = messages.dismiss(&dismissed.id).unwrap().unwrap();
+    assert_eq!(dismissed.triage_outcome, Some(TriageOutcome::Dismissed));
+
+    let counts = messages.counts().unwrap();
+    assert_eq!(
+        (counts.all, counts.pending),
+        (2, 0),
+        "both messages are triaged, so nothing is pending"
+    );
+
+    let refreshed = messages
+        .ingest(inbox_message(
+            "notice-2",
+            "可以忽略（更新）",
+            "2026-11-26T04:00:00.000Z",
+        ))
+        .unwrap();
+    assert_eq!(
+        refreshed.triage_outcome,
+        Some(TriageOutcome::Dismissed),
+        "re-ingest does not revive a dismissed message"
+    );
+}
+
+/// 老用户的库停在 v5：打开时必须补上 0006 / 0007，而不是要求重建。
+#[test]
+fn opening_a_v5_database_applies_the_task_and_inbox_migrations() {
+    let temp_dir = std::env::temp_dir().join(format!("tomatodesk-v5-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let database_path = temp_dir.join("tomatodesk.sqlite3");
+
+    {
+        let connection = rusqlite::Connection::open(&database_path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_migrations (
+                     version INTEGER PRIMARY KEY,
+                     name TEXT NOT NULL,
+                     applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                 );",
+            )
+            .unwrap();
+        for sql in [
+            include_str!("../../../migrations/0001_initial.sql"),
+            include_str!("../../../migrations/0002_item_body.sql"),
+            include_str!("../../../migrations/0003_repo_workspace.sql"),
+            include_str!("../../../migrations/0004_thread_comments.sql"),
+            include_str!("../../../migrations/0005_capture_module.sql"),
+        ] {
+            connection.execute_batch(sql).unwrap();
+        }
+        for (version, name) in [
+            (1, "initial_schema"),
+            (2, "item_body"),
+            (3, "repo_workspace"),
+            (4, "thread_comments"),
+            (5, "capture_module"),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO schema_migrations(version, name) VALUES (?1, ?2)",
+                    (version, name),
+                )
+                .unwrap();
+        }
+    }
+
+    let database = Database::open(&database_path).unwrap();
+    assert_eq!(
+        database.migrated_to(),
+        Some(7),
+        "opening a v5 database lands on the latest version"
+    );
+    assert_eq!(database.tasks().counts().unwrap().all, 0);
+    assert!(database.inbox_sources().list().unwrap().is_empty());
+    let created = database
+        .tasks()
+        .create(new_task("升级后的第一条待办", Some("manual"), None))
+        .unwrap();
+    assert_eq!(created.status, TaskStatus::Open);
+    drop(database);
+
+    let reopened = Database::open(&database_path).unwrap();
+    assert_eq!(reopened.migrated_to(), None, "nothing left to migrate");
+    assert_eq!(reopened.tasks().counts().unwrap().all, 1);
+    drop(reopened);
+    std::fs::remove_dir_all(temp_dir).unwrap();
 }

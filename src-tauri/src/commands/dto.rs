@@ -4,8 +4,9 @@ use serde_json::Value;
 use crate::{
     commands::error::{CommandError, CommandResult},
     domain::{
-        CaptureCursor, CaptureKind, CapturePageQuery, CaptureSort, TaskCursor, TaskPageQuery,
-        TaskStatus, ThreadKind, ThreadQuery, ThreadRelationship, ThreadState,
+        CaptureCursor, CaptureKind, CapturePageQuery, CaptureSort, InboxMessageCursor,
+        InboxPageQuery, NewInboxMessage, TaskCursor, TaskPageQuery, TaskStatus, ThreadKind,
+        ThreadQuery, ThreadRelationship, ThreadState,
     },
 };
 
@@ -17,6 +18,14 @@ const MAX_TOKEN_LENGTH: usize = 512;
 const MAX_DESCRIPTION_LENGTH: usize = 4_096;
 const MAX_NOTE_LENGTH: usize = 16_384;
 const MAX_TASK_TITLE_LENGTH: usize = 512;
+const MAX_EXTERNAL_ID_LENGTH: usize = 512;
+const MAX_CATEGORY_LENGTH: usize = 64;
+const MAX_TIMESTAMP_LENGTH: usize = 64;
+const MAX_SUMMARY_LENGTH: usize = 4_096;
+const MAX_BODY_LENGTH: usize = 65_536;
+const MAX_URL_LENGTH: usize = 4_096;
+const MAX_ACTOR_LENGTH: usize = 256;
+const MAX_PAYLOAD_LENGTH: usize = 65_536;
 const DEFAULT_PAGE_SIZE: u32 = 50;
 const MAX_PAGE_SIZE: u32 = 200;
 
@@ -370,6 +379,95 @@ impl ListTasksPageInput {
             status: self.status,
             cursor,
             limit,
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListInboxMessagesInput {
+    /// `None` 表示全部；`false` 只看未判断；`true` 只看已判断。
+    pub triaged: Option<bool>,
+    #[serde(default)]
+    pub unread_only: bool,
+    pub category: Option<String>,
+    pub source_id: Option<String>,
+    pub cursor: Option<String>,
+    pub limit: Option<u32>,
+}
+
+impl ListInboxMessagesInput {
+    pub(super) fn into_query(self) -> CommandResult<InboxPageQuery> {
+        let limit = self.limit.unwrap_or(DEFAULT_PAGE_SIZE);
+        if limit == 0 || limit > MAX_PAGE_SIZE {
+            return Err(CommandError::validation(format!(
+                "limit must be between 1 and {MAX_PAGE_SIZE}"
+            )));
+        }
+        let cursor = match self.cursor.as_deref().map(str::trim) {
+            Some(raw) if !raw.is_empty() => {
+                Some(InboxMessageCursor::parse(raw).ok_or_else(|| {
+                    CommandError::validation("cursor is invalid, reload the list")
+                })?)
+            }
+            _ => None,
+        };
+        Ok(InboxPageQuery {
+            triaged: self.triaged,
+            unread_only: self.unread_only,
+            category: optional_text("category", self.category, MAX_CATEGORY_LENGTH)?,
+            source_id: optional_text("sourceId", self.source_id, MAX_ID_LENGTH)?,
+            cursor,
+            limit,
+        })
+    }
+}
+
+/// 开发与测试用的入库入参：字段与 `NewInboxMessage` 一一对应，`source_id` 由命令层决定。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IngestInboxMessageInput {
+    pub external_id: String,
+    pub external_updated_at: Option<String>,
+    pub category: String,
+    pub title: String,
+    pub summary: Option<String>,
+    pub body: Option<String>,
+    pub url: Option<String>,
+    pub actor: Option<String>,
+    /// 缺省时由 SQL 填当前时间。
+    pub occurred_at: Option<String>,
+    pub related_kind: Option<String>,
+    pub related_id: Option<String>,
+    pub payload_json: Option<String>,
+}
+
+impl IngestInboxMessageInput {
+    pub(super) fn validate(self, source_id: String) -> CommandResult<NewInboxMessage> {
+        let payload_json = optional_text("payloadJson", self.payload_json, MAX_PAYLOAD_LENGTH)?;
+        if let Some(payload) = payload_json.as_deref() {
+            // 迁移里的 CHECK 也会拦住非法 JSON，这里提前给出可读的校验错误。
+            serde_json::from_str::<Value>(payload)
+                .map_err(|_| CommandError::validation("payloadJson must be valid JSON"))?;
+        }
+        Ok(NewInboxMessage {
+            source_id,
+            external_id: required_text("externalId", self.external_id, MAX_EXTERNAL_ID_LENGTH)?,
+            external_updated_at: optional_text(
+                "externalUpdatedAt",
+                self.external_updated_at,
+                MAX_TIMESTAMP_LENGTH,
+            )?,
+            category: required_text("category", self.category, MAX_CATEGORY_LENGTH)?,
+            title: required_text("title", self.title, MAX_TASK_TITLE_LENGTH)?,
+            summary: optional_text("summary", self.summary, MAX_SUMMARY_LENGTH)?,
+            body: optional_text("body", self.body, MAX_BODY_LENGTH)?,
+            url: optional_text("url", self.url, MAX_URL_LENGTH)?,
+            actor: optional_text("actor", self.actor, MAX_ACTOR_LENGTH)?,
+            occurred_at: optional_text("occurredAt", self.occurred_at, MAX_TIMESTAMP_LENGTH)?,
+            related_kind: optional_text("relatedKind", self.related_kind, MAX_CATEGORY_LENGTH)?,
+            related_id: optional_text("relatedId", self.related_id, MAX_ID_LENGTH)?,
+            payload_json,
         })
     }
 }

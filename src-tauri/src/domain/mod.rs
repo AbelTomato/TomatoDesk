@@ -1,6 +1,7 @@
 mod capture;
 mod cursor;
 mod github;
+mod inbox;
 mod sync_run;
 mod tag;
 mod task;
@@ -15,6 +16,10 @@ pub use github::{
     README_TEXT_MAX_CHARS, RepoDetail, RepoSummary, RepoThreadCounts, SyncWrites, ThreadDetail,
     ThreadKind, ThreadPage, ThreadQuery, ThreadRelationship, ThreadState, ThreadSummary,
     readme_summary,
+};
+pub use inbox::{
+    InboxCounts, InboxMessage, InboxMessageCursor, InboxPage, InboxPageQuery, InboxSource,
+    InboxSourceKind, NewInboxMessage, TriageOutcome,
 };
 pub use sync_run::{NewSyncRun, SyncRun, SyncRunStatus};
 pub use tag::Tag;
