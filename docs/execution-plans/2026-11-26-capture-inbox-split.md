@@ -680,8 +680,19 @@ pub struct MigrationNotice {
 
 - 后端接线已补齐：四个 `mod.rs` 的模块声明与导出、`database.rs` 的 0006 / 0007 注册与 `tasks()` / `inbox_sources()` / `inbox_messages()` 访问器、`commands/dto.rs` 的待办与收件箱入参、`lib.rs` 的 15 个 handler（7 待办 + 8 收件箱）。
 - 门禁：`cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test` 37/37；新增用例覆盖待办状态流转与来源唯一索引、收件箱去重与单次转待办、v5 库升级到 v7。
-- 仍未落地：上面两段「落地记录」中的前端部分——`features/tasks`、`features/inbox`、`lib/api.ts` / `lib/events.ts` 调用、`AppShell` 导航与角标、`fixtures.ts` 的收件箱数据，以及 `?preview&view=tasks|inbox` 截图走查。阶段二、阶段三的验收标准在界面侧尚未满足。
+- 仍未落地：上面两段「落地记录」中的前端部分——`features/tasks`、`features/inbox`、`lib/api.ts` / `lib/events.ts` 调用、`AppShell` 导航与角标、`fixtures.ts` 的收件箱数据，以及 `?preview&view=tasks|inbox` 截图走查。阶段二、阶段三的验收标准在界面侧尚未满足。（已由下方「前端补记」补齐。）
 
+前端补记（2026-11-26）：
+
+- 待办页：`features/tasks/{TasksPage,TaskDetail,shared}`——状态标签页（进行中 / 已完成 / 已取消 / 全部）、顶部快速新建、列表与详情双栏、完成 / 取消 / 重开、标题与备注编辑、按筛选区分的空状态；分页用「加载更多」按钮，没有引入滚动哨兵。
+- 收件箱页：`features/inbox/{InboxPage,InboxMessageDetail,shared}`——消息源栏 + 消息列表 + 详情三栏，窄屏下来源栏收起为筛选里的「全部来源」下拉；「待判断 / 已判断 / 全部」、只看未读、分类筛选、已读 / 未读、忽略、转为待办、空状态；开发窗口显示「造一条示例消息」，正式构建与 `?preview` 都不出现。
+- 导航：`AppShell` 改为收件箱 / 待办 / 随手记 / 仓库 / 搜索 / 设置，角标分别显示未判断、未完成、未归档数，默认页仍是随手记。
+- 事件：`lib/events.ts` 增加 `tasks-changed` 与 `inbox-changed`；转待办时两个都发，待办角标与收件箱角标同步更新。
+- 走查数据：`fixtures.ts` 的待办与收件箱是可变数组，`?preview` 下新建、完成、重开、已读、忽略、转待办都能走完整个闭环，不需要真实 IPC。
+- 偏差：详情编辑是「编辑 → 保存」，不是每个字段失焦即存；「只看未读」下打开消息不自动标已读，避免一边扫读一边从列表消失；初始自动选中第一条也不算已读，只有点开才算。
+- 门禁：`pnpm exec tsc --noEmit`、`pnpm lint`、`pnpm build`、`pnpm test`（6/6）、`pnpm check:design`、`pnpm format:check` 全部通过。
+- 走查：无头 Chrome 在 1440×900 与 820×900 下逐页截图；再用 CDP 实际点击走通「打开消息即已读 → 忽略 → 转待办 → 去待办页看到新条目」「完成 → 已完成标签页 → 重开」「新建待办」三条路径，无控制台报错。
+- 待人工复核：真实数据库（v7）下用窗口内的 ingest 造 3 条消息，确认角标与列表刷新；窄屏下的滚动与键盘操作。
 
 ### 阶段四：GitHub 通知连接器
 

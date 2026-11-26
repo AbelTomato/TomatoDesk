@@ -4,6 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { Button, Row } from "../components/ui";
 import CapturesPage from "../features/captures/CapturesPage";
+import InboxPage from "../features/inbox/InboxPage";
 import RepoDetail from "../features/repos/RepoDetail";
 import ReposPage from "../features/repos/ReposPage";
 import SearchPage from "../features/search/SearchPage";
@@ -12,22 +13,26 @@ import TasksPage from "../features/tasks/TasksPage";
 import UpdateBanner from "../features/update/UpdateBanner";
 import {
   countCaptures,
+  countInboxPending,
   countTasks,
   getMigrationNotice,
   openCapture,
   type CaptureCounts,
+  type InboxCounts,
   type MigrationNotice,
   type TaskCounts,
 } from "../lib/api";
 import { appEnvironment } from "../lib/env";
-import { onCapturesChanged, onTasksChanged } from "../lib/events";
+import { onCapturesChanged, onInboxChanged, onTasksChanged } from "../lib/events";
 
-type View = "tasks" | "captures" | "repos" | "search" | "settings";
+type View = "inbox" | "tasks" | "captures" | "repos" | "search" | "settings";
 
 const emptyCounts: CaptureCounts = { all: 0, active: 0, archived: 0 };
 const emptyTaskCounts: TaskCounts = { open: 0, done: 0, cancelled: 0, all: 0 };
+const emptyInboxCounts: InboxCounts = { all: 0, pending: 0, unread: 0 };
 
 const navItems: Array<{ id: View; label: string }> = [
+  { id: "inbox", label: "收件箱" },
   { id: "tasks", label: "待办" },
   { id: "captures", label: "随手记" },
   { id: "repos", label: "仓库" },
@@ -55,23 +60,31 @@ function AppShell() {
   const [threadId, setThreadId] = useState<string | null>(route.threadId);
   const [counts, setCounts] = useState<CaptureCounts>(emptyCounts);
   const [taskCounts, setTaskCounts] = useState<TaskCounts>(emptyTaskCounts);
+  const [inboxCounts, setInboxCounts] = useState<InboxCounts>(emptyInboxCounts);
   const [notice, setNotice] = useState<MigrationNotice | null>(null);
   const [noticeDismissed, setNoticeDismissed] = useState(false);
 
-  // 两个角标互不影响：任意一个失败时保留上一次的数字。
+  // 三个角标互不影响：任意一个失败时保留上一次的数字。
   const refreshCounts = useCallback(async () => {
-    const [captures, tasks] = await Promise.allSettled([countCaptures(), countTasks()]);
+    const [captures, tasks, inbox] = await Promise.allSettled([
+      countCaptures(),
+      countTasks(),
+      countInboxPending(),
+    ]);
     if (captures.status === "fulfilled") setCounts(captures.value);
     if (tasks.status === "fulfilled") setTaskCounts(tasks.value);
+    if (inbox.status === "fulfilled") setInboxCounts(inbox.value);
   }, []);
 
   useEffect(() => {
     void refreshCounts();
     const stopCaptures = onCapturesChanged(() => void refreshCounts());
     const stopTasks = onTasksChanged(() => void refreshCounts());
+    const stopInbox = onInboxChanged(() => void refreshCounts());
     return () => {
       stopCaptures();
       stopTasks();
+      stopInbox();
     };
   }, [refreshCounts]);
 
@@ -143,7 +156,11 @@ function AppShell() {
               active={view === item.id}
               aria-current={view === item.id ? "page" : undefined}
               trailing={
-                item.id === "tasks" ? (
+                item.id === "inbox" ? (
+                  <span className="font-mono text-xs text-muted-foreground">
+                    {inboxCounts.pending}
+                  </span>
+                ) : item.id === "tasks" ? (
                   <span className="font-mono text-xs text-muted-foreground">{taskCounts.open}</span>
                 ) : item.id === "captures" ? (
                   <span className="font-mono text-xs text-muted-foreground">{counts.active}</span>
@@ -186,6 +203,7 @@ function AppShell() {
         ) : null}
 
         <div className="flex min-h-0 flex-1 flex-col">
+          {view === "inbox" ? <InboxPage onOpenTasks={() => navigate("tasks")} /> : null}
           {view === "tasks" ? <TasksPage /> : null}
           {view === "captures" ? <CapturesPage /> : null}
           {view === "repos" ? (

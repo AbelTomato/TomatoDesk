@@ -187,6 +187,81 @@ export interface UpdateTaskInput {
   note: string | null;
 }
 
+export type InboxSourceKind = "github" | "email" | "rss" | "manual";
+export type TriageOutcome = "dismissed" | "task" | "capture";
+
+export interface InboxSource {
+  id: string;
+  kind: InboxSourceKind;
+  name: string;
+  enabled: boolean;
+  lastSyncedAt: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** 一条收件箱消息：原文不可编辑，用户只能改已读与判断结果。 */
+export interface InboxMessage {
+  id: string;
+  sourceId: string;
+  externalId: string;
+  /** mention / review_requested / assigned / ci_failed / release / mail */
+  category: string;
+  title: string;
+  summary: string | null;
+  body: string | null;
+  url: string | null;
+  /** 触发人 / 发件人。 */
+  actor: string | null;
+  occurredAt: string;
+  /** 看过时间；不等于判断过。 */
+  readAt: string | null;
+  triagedAt: string | null;
+  triageOutcome: TriageOutcome | null;
+  triageRefId: string | null;
+  relatedKind: string | null;
+  relatedId: string | null;
+}
+
+export interface InboxPage {
+  messages: InboxMessage[];
+  nextCursor: string | null;
+  hasMore: boolean;
+}
+
+export interface InboxPageInput {
+  /** undefined / null 表示全部；false 只看未判断；true 只看已判断。 */
+  triaged?: boolean | null;
+  unreadOnly?: boolean;
+  category?: string | null;
+  sourceId?: string | null;
+  cursor?: string | null;
+  limit?: number;
+}
+
+export interface InboxCounts {
+  all: number;
+  pending: number;
+  unread: number;
+}
+
+/** 开发用入库入参：字段与后端 `IngestInboxMessageInput` 一致。 */
+export interface IngestInboxMessageInput {
+  externalId: string;
+  externalUpdatedAt?: string | null;
+  category: string;
+  title: string;
+  summary?: string | null;
+  body?: string | null;
+  url?: string | null;
+  actor?: string | null;
+  occurredAt?: string | null;
+  relatedKind?: string | null;
+  relatedId?: string | null;
+  payloadJson?: string | null;
+}
+
 export interface GithubRepo {
   id: string;
   owner: string;
@@ -389,13 +464,13 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
  * 开发模式下的界面走查开关：带 `?preview` 时读接口返回 fixtures。
  * 生产构建里 `import.meta.env.DEV` 为 false，这段连同 fixtures 一起被摇掉。
  */
-const previewEnabled =
+export const previewMode =
   import.meta.env.DEV && new URLSearchParams(window.location.search).has("preview");
 
 type Fixtures = (typeof import("../features/dev/fixtures"))["fixtures"];
 
 async function preview<T>(pick: (data: Fixtures) => T): Promise<T | null> {
-  if (!previewEnabled) return null;
+  if (!previewMode) return null;
   const { fixtures } = await import("../features/dev/fixtures");
   return pick(fixtures);
 }
@@ -514,6 +589,47 @@ export async function cancelTask(id: string): Promise<Task> {
 export async function reopenTask(id: string): Promise<Task> {
   const mocked = await preview((data) => data.setTaskStatus(id, "open"));
   return mocked ?? call("reopen_task", { input: { id } });
+}
+
+export async function listInboxMessagesPage(input: InboxPageInput): Promise<InboxPage> {
+  const mocked = await preview((data) => data.inboxPage(input));
+  return mocked ?? call("list_inbox_messages_page", { input });
+}
+
+export async function countInboxPending(): Promise<InboxCounts> {
+  const mocked = await preview((data) => data.inboxCounts());
+  return mocked ?? call("count_inbox_pending");
+}
+
+export async function listInboxSources(): Promise<InboxSource[]> {
+  const mocked = await preview((data) => data.inboxSources);
+  return mocked ?? call("list_inbox_sources");
+}
+
+export async function markInboxMessageRead(id: string): Promise<InboxMessage> {
+  const mocked = await preview((data) => data.markInboxRead(id, true));
+  return mocked ?? call("mark_inbox_message_read", { input: { id } });
+}
+
+export async function markInboxMessageUnread(id: string): Promise<InboxMessage> {
+  const mocked = await preview((data) => data.markInboxRead(id, false));
+  return mocked ?? call("mark_inbox_message_unread", { input: { id } });
+}
+
+export async function dismissInboxMessage(id: string): Promise<InboxMessage> {
+  const mocked = await preview((data) => data.dismissInboxMessage(id));
+  return mocked ?? call("dismiss_inbox_message", { input: { id } });
+}
+
+/** 转为待办：重复调用返回同一条待办，不会生成第二条。 */
+export async function convertInboxMessageToTask(id: string): Promise<Task> {
+  const mocked = await preview((data) => data.convertInboxMessage(id));
+  return mocked ?? call("convert_inbox_message_to_task", { input: { id } });
+}
+
+/** 只用于开发窗口造消息；正式构建里后端会直接拒绝。 */
+export function ingestInboxMessage(input: IngestInboxMessageInput): Promise<InboxMessage> {
+  return call("ingest_inbox_message", { input });
 }
 
 export function addGithubRepo(url: string): Promise<GithubRepo> {

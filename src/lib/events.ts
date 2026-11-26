@@ -21,3 +21,15 @@ export function onTasksChanged(handler: () => void): () => void {
   window.addEventListener(TASKS_CHANGED_EVENT, handler);
   return () => window.removeEventListener(TASKS_CHANGED_EVENT, handler);
 }
+
+/** 收件箱的已读、忽略与判断结果变化。 */
+export const INBOX_CHANGED_EVENT = "tomatodesk:inbox-changed";
+
+export function notifyInboxChanged(): void {
+  window.dispatchEvent(new Event(INBOX_CHANGED_EVENT));
+}
+
+export function onInboxChanged(handler: () => void): () => void {
+  window.addEventListener(INBOX_CHANGED_EVENT, handler);
+  return () => window.removeEventListener(INBOX_CHANGED_EVENT, handler);
+}

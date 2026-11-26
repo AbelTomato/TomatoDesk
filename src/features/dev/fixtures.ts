@@ -9,6 +9,11 @@ import type {
   GithubRelease,
   GithubRepo,
   GithubSyncRun,
+  InboxCounts,
+  InboxMessage,
+  InboxPage,
+  InboxPageInput,
+  InboxSource,
   MigrationNotice,
   RepoDetail,
   RepoSummary,
@@ -152,8 +157,8 @@ const captureTags: Record<string, Tag[]> = {
 const counts: CaptureCounts = { all: 1284, active: 1214, archived: 70 };
 
 /*
- * 待办的走查数据是可变的：`?preview` 下新建、完成与重开都直接改这里的数组，
- * 页面能和真实后端一样走完整个闭环。
+ * 待办与收件箱的走查数据是可变的：`?preview` 下新建、完成、已读、忽略与转待办
+ * 都直接改这里的数组，页面能和真实后端一样走完整个闭环。
  */
 const nowIso = () => new Date().toISOString();
 
@@ -266,6 +271,211 @@ const setTaskStatus = (id: string, status: TaskStatus): Task => {
   task.updatedAt = nowIso();
   task.completedAt = status === "done" ? (task.completedAt ?? nowIso()) : null;
   return { ...task };
+};
+
+const inboxSources: InboxSource[] = [
+  {
+    id: "source-github",
+    kind: "github",
+    name: "GitHub 通知",
+    enabled: true,
+    lastSyncedAt: minutesAgo(12),
+    lastError: null,
+    createdAt: daysAgo(30),
+    updatedAt: minutesAgo(12),
+  },
+  {
+    id: "source-mail",
+    kind: "email",
+    name: "工作邮箱",
+    enabled: true,
+    lastSyncedAt: hoursAgo(3),
+    lastError: null,
+    createdAt: daysAgo(21),
+    updatedAt: hoursAgo(3),
+  },
+  {
+    id: "source-manual",
+    kind: "manual",
+    name: "手动转发",
+    enabled: true,
+    lastSyncedAt: null,
+    lastError: null,
+    createdAt: daysAgo(7),
+    updatedAt: daysAgo(7),
+  },
+];
+
+const messages: InboxMessage[] = [
+  {
+    id: "message-1",
+    sourceId: "source-github",
+    externalId: "github:notification:9001",
+    category: "mention",
+    title: "有人在 PR #482 里 @ 了你",
+    summary: "游标格式建议写成不透明字符串，前端不要解析它。",
+    body: "游标格式建议写成不透明字符串，前端不要解析它。\n\n`排序值|id` 里的 `|` 如果出现在值里会截断，记得转义或改用 base64。",
+    url: "https://github.com/TencentCloud/Octop/pull/482",
+    actor: "someone-else",
+    occurredAt: minutesAgo(12),
+    readAt: null,
+    triagedAt: null,
+    triageOutcome: null,
+    triageRefId: null,
+    relatedKind: "github_thread",
+    relatedId: "thread-1",
+  },
+  {
+    id: "message-2",
+    sourceId: "source-github",
+    externalId: "github:notification:9002",
+    category: "review_requested",
+    title: "请求你评审 PR #476 chore: 升级到 Tauri 2.1",
+    summary: "还在等上游修 WebView2 的拖拽问题。",
+    body: null,
+    url: "https://github.com/TencentCloud/Octop/pull/476",
+    actor: "someone-else",
+    occurredAt: hoursAgo(2),
+    readAt: null,
+    triagedAt: null,
+    triageOutcome: null,
+    triageRefId: null,
+    relatedKind: "github_thread",
+    relatedId: "thread-3",
+  },
+  {
+    id: "message-3",
+    sourceId: "source-github",
+    externalId: "github:notification:9003",
+    category: "ci_failed",
+    title: "main 分支的 CI 失败：clippy 报了 3 个告警",
+    summary: "unused import 与两处 needless borrow。",
+    body: "error: unused import: `crate::domain::Task`\n\nwarning: this expression borrows a reference that is immediately dereferenced\n\n3 warnings emitted",
+    url: "https://github.com/TencentCloud/Octop/actions/runs/1201",
+    actor: "github-actions",
+    occurredAt: hoursAgo(4),
+    readAt: hoursAgo(3),
+    triagedAt: null,
+    triageOutcome: null,
+    triageRefId: null,
+    relatedKind: null,
+    relatedId: null,
+  },
+  {
+    id: "message-4",
+    sourceId: "source-github",
+    externalId: "github:notification:9004",
+    category: "assigned",
+    title: "Issue #466 指派给了你：两千条内容时首屏明显卡顿",
+    summary: "列表一次性取回全部行，滚动时还要在 JS 里排序。",
+    body: null,
+    url: "https://github.com/TencentCloud/Octop/issues/466",
+    actor: "someone-else",
+    occurredAt: daysAgo(2),
+    readAt: daysAgo(2),
+    triagedAt: daysAgo(2),
+    triageOutcome: "task",
+    triageRefId: "task-3",
+    relatedKind: "github_thread",
+    relatedId: "thread-5",
+  },
+  {
+    id: "message-5",
+    sourceId: "source-github",
+    externalId: "github:notification:9005",
+    category: "release",
+    title: "Octop v0.4.0-rc.1 已发布",
+    summary: "设计语言文档、页面级重排与状态色例外。",
+    body: null,
+    url: "https://github.com/TencentCloud/Octop/releases/tag/v0.4.0-rc.1",
+    actor: "github-actions",
+    occurredAt: hoursAgo(6),
+    readAt: hoursAgo(6),
+    triagedAt: hoursAgo(5),
+    triageOutcome: "dismissed",
+    triageRefId: null,
+    relatedKind: null,
+    relatedId: null,
+  },
+  {
+    id: "message-6",
+    sourceId: "source-mail",
+    externalId: "mail:inbox:771",
+    category: "mail",
+    title: "下周的设计评审挪到周四 15:00",
+    summary: "议题不变，会议室换到 5 楼小会议室。",
+    body: "各位：\n\n下周的设计评审挪到周四 15:00，议题不变，会议室换到 5 楼小会议室。\n\n谢谢",
+    url: null,
+    actor: "组织者",
+    occurredAt: hoursAgo(9),
+    readAt: hoursAgo(8),
+    triagedAt: null,
+    triageOutcome: null,
+    triageRefId: null,
+    relatedKind: null,
+    relatedId: null,
+  },
+];
+
+const inboxCounts = (): InboxCounts => ({
+  all: messages.length,
+  pending: messages.filter((message) => !message.triagedAt).length,
+  unread: messages.filter((message) => !message.readAt && !message.triagedAt).length,
+});
+
+const inboxPage = (input: InboxPageInput): InboxPage => {
+  const filtered = [...messages]
+    .sort((left, right) => right.occurredAt.localeCompare(left.occurredAt))
+    .filter((message) =>
+      input.triaged == null ? true : Boolean(message.triagedAt) === input.triaged,
+    )
+    .filter((message) => !input.unreadOnly || !message.readAt)
+    .filter((message) => !input.category || message.category === input.category)
+    .filter((message) => !input.sourceId || message.sourceId === input.sourceId);
+  return { messages: filtered, nextCursor: null, hasMore: false };
+};
+
+const findMessage = (id: string): InboxMessage => {
+  const message = messages.find((entry) => entry.id === id);
+  if (!message) throw new Error("消息不存在，可能已被清理。");
+  return message;
+};
+
+const markInboxRead = (id: string, read: boolean): InboxMessage => {
+  const message = findMessage(id);
+  message.readAt = read ? (message.readAt ?? nowIso()) : null;
+  return { ...message };
+};
+
+const dismissInboxMessage = (id: string): InboxMessage => {
+  const message = findMessage(id);
+  // 与后端一致：已判断过的不再改写判断结果，重复点击幂等。
+  if (!message.triagedAt) {
+    message.triagedAt = nowIso();
+    message.triageOutcome = "dismissed";
+    message.readAt = message.readAt ?? nowIso();
+  }
+  return { ...message };
+};
+
+const convertInboxMessage = (id: string): Task => {
+  const message = findMessage(id);
+  if (message.triagedAt) {
+    if (message.triageOutcome === "task" && message.triageRefId)
+      return findTask(message.triageRefId);
+    throw new Error("这条消息已经判断过，不能再转为待办。");
+  }
+  const created = createTask({
+    title: message.title,
+    note: [message.summary, message.url].filter(Boolean).join("\n\n") || null,
+  });
+  created.originKind = "inbox";
+  created.originId = message.id;
+  message.triagedAt = nowIso();
+  message.triageOutcome = "task";
+  message.triageRefId = created.id;
+  message.readAt = message.readAt ?? nowIso();
+  return { ...created };
 };
 
 const repos: RepoSummary[] = [
@@ -752,6 +962,12 @@ export const fixtures = {
   createTask,
   updateTask,
   setTaskStatus,
+  inboxSources,
+  inboxCounts,
+  inboxPage,
+  markInboxRead,
+  dismissInboxMessage,
+  convertInboxMessage,
   repos,
   repo,
   threads,
