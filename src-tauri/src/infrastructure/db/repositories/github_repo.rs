@@ -79,9 +79,9 @@ impl GithubRepoRepository {
                 connection,
                 "SELECT repo_id, COUNT(*) FROM github_releases GROUP BY repo_id",
             )?;
-            let item_counts = grouped_totals(
+            let capture_counts = grouped_totals(
                 connection,
-                "SELECT repo_id, COUNT(*) FROM items WHERE repo_id IS NOT NULL GROUP BY repo_id",
+                "SELECT repo_id, COUNT(*) FROM captures WHERE repo_id IS NOT NULL GROUP BY repo_id",
             )?;
 
             Ok(repos
@@ -97,7 +97,7 @@ impl GithubRepoRepository {
                         open_issues: issues,
                         reviews,
                         releases: release_counts.get(&repo.id).copied().unwrap_or(0),
-                        items: item_counts.get(&repo.id).copied().unwrap_or(0),
+                        captures: capture_counts.get(&repo.id).copied().unwrap_or(0),
                         enabled: repo.enabled,
                         last_synced_at: repo.last_synced_at.clone(),
                         is_archived: repo.is_archived,
@@ -135,13 +135,13 @@ impl GithubRepoRepository {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )?;
             let releases = count_rows(connection, "github_releases", repo_id)?;
-            let items = count_rows(connection, "items", repo_id)?;
+            let captures = count_rows(connection, "captures", repo_id)?;
             Ok(RepoThreadCounts {
                 open_pull_requests: pull_requests,
                 open_issues: issues,
                 reviews,
                 releases,
-                items,
+                captures,
             })
         })
     }

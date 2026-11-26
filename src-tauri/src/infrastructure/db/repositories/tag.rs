@@ -55,30 +55,33 @@ impl TagRepository {
         })
     }
 
-    pub fn set_item_tags(&self, item_id: &str, tag_ids: &[String]) -> DbResult<()> {
+    pub fn set_capture_tags(&self, capture_id: &str, tag_ids: &[String]) -> DbResult<()> {
         let unique_tags = tag_ids.iter().collect::<HashSet<_>>();
         self.database.with_transaction(|transaction| {
-            ensure_item_exists(transaction, item_id)?;
-            transaction.execute("DELETE FROM item_tags WHERE item_id = ?1", [item_id])?;
+            ensure_capture_exists(transaction, capture_id)?;
+            transaction.execute(
+                "DELETE FROM capture_tags WHERE capture_id = ?1",
+                [capture_id],
+            )?;
             for tag_id in unique_tags {
                 transaction.execute(
-                    "INSERT INTO item_tags(item_id, tag_id) VALUES (?1, ?2)",
-                    params![item_id, tag_id],
+                    "INSERT INTO capture_tags(capture_id, tag_id) VALUES (?1, ?2)",
+                    params![capture_id, tag_id],
                 )?;
             }
             Ok(())
         })
     }
 
-    pub fn for_item(&self, item_id: &str) -> DbResult<Vec<Tag>> {
+    pub fn for_capture(&self, capture_id: &str) -> DbResult<Vec<Tag>> {
         self.database.with_connection(|connection| {
             let mut statement = connection.prepare(&format!(
                 "SELECT {TAG_FIELDS}
-                 FROM tags JOIN item_tags ON item_tags.tag_id = tags.id
-                 WHERE item_tags.item_id = ?1
+                 FROM tags JOIN capture_tags ON capture_tags.tag_id = tags.id
+                 WHERE capture_tags.capture_id = ?1
                  ORDER BY tags.name COLLATE NOCASE, tags.id"
             ))?;
-            let rows = statement.query_map([item_id], map_tag)?;
+            let rows = statement.query_map([capture_id], map_tag)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
         })
     }
@@ -104,14 +107,14 @@ fn map_tag(row: &Row<'_>) -> rusqlite::Result<Tag> {
     })
 }
 
-fn ensure_item_exists(transaction: &Transaction<'_>, id: &str) -> DbResult<()> {
+fn ensure_capture_exists(transaction: &Transaction<'_>, id: &str) -> DbResult<()> {
     let exists: bool = transaction.query_row(
-        "SELECT EXISTS(SELECT 1 FROM items WHERE id = ?1)",
+        "SELECT EXISTS(SELECT 1 FROM captures WHERE id = ?1)",
         [id],
         |row| row.get(0),
     )?;
     if !exists {
-        return Err(DbError::NotFound("item"));
+        return Err(DbError::NotFound("capture"));
     }
     Ok(())
 }

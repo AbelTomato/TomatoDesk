@@ -4,7 +4,7 @@ use serde_json::Value;
 use crate::{
     commands::error::{CommandError, CommandResult},
     domain::{
-        ItemCursor, ItemKind, ItemPageQuery, ItemSort, ItemStatus, ThreadKind, ThreadQuery,
+        CaptureCursor, CaptureKind, CapturePageQuery, CaptureSort, ThreadKind, ThreadQuery,
         ThreadRelationship, ThreadState,
     },
 };
@@ -26,18 +26,20 @@ pub(super) fn parse_input<T: DeserializeOwned>(input: Option<Value>) -> CommandR
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CreateItemInput {
-    pub kind: ItemKind,
+pub struct CreateCaptureInput {
+    pub kind: CaptureKind,
     pub source: String,
     pub url: Option<String>,
     pub title: Option<String>,
     pub summary: Option<String>,
     pub note: Option<String>,
-    /// 挂在某个 GitHub 仓库下时传入，普通收集为 `None`。
+    /// 完整正文；笔记类由调用方写入，链接类通常留空等回源抓取。
+    pub body: Option<String>,
+    /// 挂在某个 GitHub 仓库下时传入，普通随手记为 `None`。
     pub repo_id: Option<String>,
 }
 
-impl CreateItemInput {
+impl CreateCaptureInput {
     pub(super) fn validate(mut self) -> CommandResult<Self> {
         self.source = required_text("source", self.source, 4096)?;
         self.repo_id = optional_text("repoId", self.repo_id.take(), MAX_ID_LENGTH)?;
@@ -47,12 +49,12 @@ impl CreateItemInput {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CaptureItemInput {
+pub struct QuickCaptureInput {
     pub value: String,
     pub note: Option<String>,
 }
 
-impl CaptureItemInput {
+impl QuickCaptureInput {
     pub(super) fn validate(mut self) -> CommandResult<Self> {
         self.value = required_text("value", self.value, MAX_CAPTURE_LENGTH)?;
         self.note = match self.note.take() {
@@ -66,18 +68,17 @@ impl CaptureItemInput {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct UpdateItemInput {
+pub struct UpdateCaptureInput {
     pub id: String,
-    pub kind: ItemKind,
+    pub kind: CaptureKind,
     pub source: String,
     pub url: Option<String>,
     pub title: Option<String>,
     pub summary: Option<String>,
     pub note: Option<String>,
-    pub status: ItemStatus,
 }
 
-impl UpdateItemInput {
+impl UpdateCaptureInput {
     pub(super) fn validate(mut self) -> CommandResult<Self> {
         self.id = required_text("id", self.id, MAX_ID_LENGTH)?;
         self.source = required_text("source", self.source, 4096)?;
@@ -87,35 +88,37 @@ impl UpdateItemInput {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ListItemsPageInput {
-    pub status: Option<ItemStatus>,
-    pub kind: Option<ItemKind>,
+pub struct ListCapturesPageInput {
+    /// `None` 表示全部；`false` 只看未归档；`true` 只看已归档。
+    pub archived: Option<bool>,
+    pub kind: Option<CaptureKind>,
     pub repo_id: Option<String>,
-    pub sort: Option<ItemSort>,
+    pub sort: Option<CaptureSort>,
     pub cursor: Option<String>,
     pub limit: Option<u32>,
 }
 
-impl ListItemsPageInput {
-    pub(super) fn into_query(self) -> CommandResult<ItemPageQuery> {
+impl ListCapturesPageInput {
+    pub(super) fn into_query(self) -> CommandResult<CapturePageQuery> {
         let limit = self.limit.unwrap_or(DEFAULT_PAGE_SIZE);
         if limit == 0 || limit > MAX_PAGE_SIZE {
             return Err(CommandError::validation(format!(
                 "limit must be between 1 and {MAX_PAGE_SIZE}"
             )));
         }
-        let cursor =
-            match self.cursor.as_deref().map(str::trim) {
-                Some(raw) if !raw.is_empty() => Some(ItemCursor::parse(raw).ok_or_else(|| {
+        let cursor = match self.cursor.as_deref().map(str::trim) {
+            Some(raw) if !raw.is_empty() => {
+                Some(CaptureCursor::parse(raw).ok_or_else(|| {
                     CommandError::validation("cursor is invalid, reload the list")
-                })?),
-                _ => None,
-            };
-        Ok(ItemPageQuery {
-            status: self.status,
+                })?)
+            }
+            _ => None,
+        };
+        Ok(CapturePageQuery {
+            archived: self.archived,
             kind: self.kind,
             repo_id: optional_text("repoId", self.repo_id, MAX_ID_LENGTH)?,
-            sort: self.sort.unwrap_or(ItemSort::Updated),
+            sort: self.sort.unwrap_or(CaptureSort::Updated),
             cursor,
             limit,
         })
@@ -124,17 +127,17 @@ impl ListItemsPageInput {
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CountItemsInput {
-    pub kind: Option<ItemKind>,
+pub struct CountCapturesInput {
+    pub kind: Option<CaptureKind>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ItemIdInput {
+pub struct IdInput {
     pub id: String,
 }
 
-impl ItemIdInput {
+impl IdInput {
     pub(super) fn validate(mut self) -> CommandResult<Self> {
         self.id = required_text("id", self.id, MAX_ID_LENGTH)?;
         Ok(self)
@@ -143,11 +146,11 @@ impl ItemIdInput {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SearchItemsInput {
+pub struct SearchCapturesInput {
     pub query: String,
 }
 
-impl SearchItemsInput {
+impl SearchCapturesInput {
     pub(super) fn validate(self) -> CommandResult<Self> {
         if self.query.chars().count() > MAX_SEARCH_LENGTH {
             return Err(CommandError::validation(format!(
@@ -183,8 +186,8 @@ impl CreateTagInput {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SetItemTagsInput {
-    pub item_id: String,
+pub struct SetCaptureTagsInput {
+    pub capture_id: String,
     pub tag_ids: Vec<String>,
 }
 
@@ -214,9 +217,9 @@ impl GithubTokenInput {
     }
 }
 
-impl SetItemTagsInput {
+impl SetCaptureTagsInput {
     pub(super) fn validate(mut self) -> CommandResult<Self> {
-        self.item_id = required_text("itemId", self.item_id, MAX_ID_LENGTH)?;
+        self.capture_id = required_text("captureId", self.capture_id, MAX_ID_LENGTH)?;
         if self.tag_ids.len() > MAX_TAGS_PER_ITEM {
             return Err(CommandError::validation(format!(
                 "tagIds cannot contain more than {MAX_TAGS_PER_ITEM} entries"
@@ -270,13 +273,14 @@ impl ListRepoThreadsInput {
                 "limit must be between 1 and {MAX_PAGE_SIZE}"
             )));
         }
-        let cursor =
-            match self.cursor.as_deref().map(str::trim) {
-                Some(raw) if !raw.is_empty() => Some(ItemCursor::parse(raw).ok_or_else(|| {
+        let cursor = match self.cursor.as_deref().map(str::trim) {
+            Some(raw) if !raw.is_empty() => {
+                Some(CaptureCursor::parse(raw).ok_or_else(|| {
                     CommandError::validation("cursor is invalid, reload the list")
-                })?),
-                _ => None,
-            };
+                })?)
+            }
+            _ => None,
+        };
         Ok(ThreadQuery {
             repo_id: required_text("repoId", self.repo_id, MAX_ID_LENGTH)?,
             kind: self.kind,

@@ -3,19 +3,16 @@ import { isTauri } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 import { Button, ListItem, ListItemMeta, ListItemTitle } from "../../components/ui";
-import { getItemBody, searchItems, type ItemSummary } from "../../lib/api";
+import { getCaptureBody, searchCaptures, type CaptureSummary } from "../../lib/api";
 import { formatDate } from "../../lib/format";
+import { getCaptureLabel, kindLabels } from "../captures/shared";
 
 const SEARCH_LIMIT = 100;
-
-function labelOf(item: ItemSummary) {
-  return item.title?.trim() || item.summary?.trim() || item.note?.trim() || item.source;
-}
 
 /** 全局搜索：覆盖标题、摘要、备注与正文（FTS5），结果上限 100 条。 */
 function SearchPage() {
   const [query, setQuery] = useState("");
-  const [results, setResults] = useState<ItemSummary[]>([]);
+  const [results, setResults] = useState<CaptureSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -39,10 +36,10 @@ function SearchPage() {
     const current = ++requestId.current;
     setLoading(true);
     const timer = window.setTimeout(() => {
-      void searchItems(keyword)
-        .then((items) => {
+      void searchCaptures(keyword)
+        .then((captures) => {
           if (current !== requestId.current) return;
-          setResults(items);
+          setResults(captures);
           setError(null);
         })
         .catch((searchError) => {
@@ -57,7 +54,7 @@ function SearchPage() {
     return () => window.clearTimeout(timer);
   }, [query]);
 
-  const selected = results.find((item) => item.id === selectedId) ?? null;
+  const selected = results.find((capture) => capture.id === selectedId) ?? null;
 
   useEffect(() => {
     if (!selectedId) {
@@ -66,7 +63,7 @@ function SearchPage() {
     }
     let disposed = false;
     setBodyLoading(true);
-    void getItemBody(selectedId)
+    void getCaptureBody(selectedId)
       .then((value) => {
         if (!disposed) setBody(value.body);
       })
@@ -131,22 +128,20 @@ function SearchPage() {
             <p className="px-4 py-8 text-center text-sm text-muted-foreground">没有匹配的内容。</p>
           ) : null}
           <div className="divide-y divide-border">
-            {results.map((item) => (
+            {results.map((capture) => (
               <ListItem
-                key={item.id}
-                active={item.id === selectedId}
+                key={capture.id}
+                active={capture.id === selectedId}
                 flush
                 className="px-4 py-3"
-                aria-current={item.id === selectedId ? "true" : undefined}
-                onClick={() => setSelectedId(item.id)}
+                aria-current={capture.id === selectedId ? "true" : undefined}
+                onClick={() => setSelectedId(capture.id)}
               >
-                <ListItemTitle>{labelOf(item)}</ListItemTitle>
+                <ListItemTitle>{getCaptureLabel(capture)}</ListItemTitle>
                 <ListItemMeta>
-                  <span>
-                    {item.kind === "note" ? "笔记" : item.kind === "link" ? "链接" : "GitHub"}
-                  </span>
-                  <span>{item.source}</span>
-                  <span className="ml-auto">{formatDate(item.updatedAt)}</span>
+                  <span>{kindLabels[capture.kind]}</span>
+                  <span>{capture.source}</span>
+                  <span className="ml-auto">{formatDate(capture.updatedAt)}</span>
                 </ListItemMeta>
               </ListItem>
             ))}
@@ -157,7 +152,7 @@ function SearchPage() {
           {selected ? (
             <div className="mx-auto max-w-2xl">
               <h3 className="text-xl leading-snug font-bold tracking-tight break-words">
-                {labelOf(selected)}
+                {getCaptureLabel(selected)}
               </h3>
               <p className="mt-1 font-mono text-xs text-muted-foreground">
                 {selected.source} · 更新于 {formatDate(selected.updatedAt)}
@@ -187,7 +182,7 @@ function SearchPage() {
                 ) : body?.trim() ? (
                   <p className="mt-2 text-sm leading-7 whitespace-pre-wrap">{body}</p>
                 ) : (
-                  <p className="mt-2 text-sm text-muted-foreground">这条内容没有正文。</p>
+                  <p className="mt-2 text-sm text-muted-foreground">这条随手记没有正文。</p>
                 )}
               </div>
             </div>

@@ -8,14 +8,16 @@ use std::{
 use rusqlite::{Connection, Transaction};
 
 use super::{
-    DbError, DbResult, GithubReleaseRepository, GithubRepoRepository, GithubThreadRepository,
-    ItemRepository, SyncRunRepository, TagRepository,
+    CaptureRepository, DbError, DbResult, GithubReleaseRepository, GithubRepoRepository,
+    GithubThreadRepository, SyncRunRepository, TagRepository,
 };
 
 struct Migration {
     version: i64,
     name: &'static str,
     sql: &'static str,
+    /// 迁移完成后展示给用户的说明；没有用户可见变化时为 `None`。
+    message: Option<&'static str>,
 }
 
 const MIGRATIONS: &[Migration] = &[
@@ -23,29 +25,40 @@ const MIGRATIONS: &[Migration] = &[
         version: 1,
         name: "initial_schema",
         sql: include_str!("../../../migrations/0001_initial.sql"),
+        message: None,
     },
     Migration {
         version: 2,
         name: "item_body",
         sql: include_str!("../../../migrations/0002_item_body.sql"),
+        message: None,
     },
     Migration {
         version: 3,
         name: "repo_workspace",
         sql: include_str!("../../../migrations/0003_repo_workspace.sql"),
+        message: None,
     },
     Migration {
         version: 4,
         name: "thread_comments",
         sql: include_str!("../../../migrations/0004_thread_comments.sql"),
+        message: None,
+    },
+    Migration {
+        version: 5,
+        name: "capture_module",
+        sql: include_str!("../../../migrations/0005_capture_module.sql"),
+        message: Some("收集已独立为「随手记」：原来的「已处理」状态已取消，相关条目归为未归档。"),
     },
 ];
 
-/// 本次启动执行了迁移时留下的痕迹，供前端提示「需要重新同步」。
+/// 本次启动执行了迁移时留下的痕迹，供前端提示。
 #[derive(Debug, Clone, Default)]
 struct MigrationNotice {
     backup_path: Option<PathBuf>,
     migrated_to: Option<i64>,
+    message: Option<String>,
 }
 
 #[derive(Clone)]
@@ -105,6 +118,14 @@ impl Database {
             .and_then(|notice| notice.migrated_to)
     }
 
+    /// 本次迁移对应的用户提示；没有提示时为 `None`。
+    pub fn migration_message(&self) -> Option<String> {
+        self.notice
+            .lock()
+            .ok()
+            .and_then(|notice| notice.message.clone())
+    }
+
     pub fn migrate(&self) -> DbResult<()> {
         self.with_connection_mut(|connection| {
             connection.execute_batch(
@@ -149,6 +170,11 @@ impl Database {
             if let Ok(mut notice) = self.notice.lock() {
                 notice.backup_path = backup;
                 notice.migrated_to = pending.iter().map(|migration| migration.version).max();
+                notice.message = pending
+                    .iter()
+                    .rev()
+                    .find_map(|migration| migration.message)
+                    .map(ToOwned::to_owned);
             }
             Ok(())
         })
@@ -183,8 +209,8 @@ impl Database {
         Ok(Some(target))
     }
 
-    pub fn items(&self) -> ItemRepository {
-        ItemRepository::new(self.clone())
+    pub fn captures(&self) -> CaptureRepository {
+        CaptureRepository::new(self.clone())
     }
 
     pub fn tags(&self) -> TagRepository {

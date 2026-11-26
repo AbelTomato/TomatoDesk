@@ -1,7 +1,7 @@
 use reqwest::Url;
 
 use crate::{
-    domain::{Item, ItemKind, NewItem},
+    domain::{Capture, CaptureKind, NewCapture, excerpt},
     infrastructure::{
         db::{Database, DbResult},
         web_metadata::fetch_web_metadata,
@@ -12,13 +12,13 @@ pub(crate) async fn capture_clipboard_content(
     database: &Database,
     value: String,
     note: Option<String>,
-) -> DbResult<Item> {
+) -> DbResult<Capture> {
     if let Some(url) = parse_web_url(&value) {
         let metadata = fetch_web_metadata(&url).await.unwrap_or_default();
         let stored_url = metadata.canonical_url.unwrap_or_else(|| url.to_string());
-        return database.items().create(NewItem {
-            kind: ItemKind::Link,
-            source: "clipboard".into(),
+        return database.captures().create(NewCapture {
+            kind: CaptureKind::Link,
+            source: "quick_capture".into(),
             url: Some(stored_url),
             title: metadata.title,
             summary: metadata.description,
@@ -28,14 +28,16 @@ pub(crate) async fn capture_clipboard_content(
         });
     }
 
-    database.items().create(NewItem {
-        kind: ItemKind::Note,
-        source: "clipboard".into(),
+    // 笔记类：原文进 body，摘要从正文压出来，note 留给用户补充说明。
+    let summary = excerpt(&value);
+    database.captures().create(NewCapture {
+        kind: CaptureKind::Note,
+        source: "quick_capture".into(),
         url: None,
         title: None,
-        summary: None,
-        note: Some(value),
-        body: None,
+        summary,
+        note: None,
+        body: Some(value),
         repo_id: None,
     })
 }

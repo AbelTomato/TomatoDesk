@@ -3,38 +3,38 @@ import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { Button, Row } from "../components/ui";
-import Inbox from "../features/inbox/Inbox";
+import CapturesPage from "../features/captures/CapturesPage";
 import RepoDetail from "../features/repos/RepoDetail";
 import ReposPage from "../features/repos/ReposPage";
 import SearchPage from "../features/search/SearchPage";
 import SettingsPage from "../features/settings/SettingsPage";
 import UpdateBanner from "../features/update/UpdateBanner";
 import {
-  countItemsByStatus,
+  countCaptures,
   getMigrationNotice,
   openCapture,
-  type ItemStatusCounts,
+  type CaptureCounts,
   type MigrationNotice,
 } from "../lib/api";
 import { appEnvironment } from "../lib/env";
-import { onItemsChanged } from "../lib/events";
+import { onCapturesChanged } from "../lib/events";
 
-type View = "inbox" | "repos" | "search" | "settings";
+type View = "captures" | "repos" | "search" | "settings";
 
-const emptyCounts: ItemStatusCounts = { all: 0, pending: 0, processed: 0, archived: 0 };
+const emptyCounts: CaptureCounts = { all: 0, active: 0, archived: 0 };
 
 const navItems: Array<{ id: View; label: string }> = [
-  { id: "inbox", label: "收集" },
+  { id: "captures", label: "随手记" },
   { id: "repos", label: "仓库" },
   { id: "search", label: "搜索" },
   { id: "settings", label: "设置" },
 ];
 
-/** `?view=repos&repo=<id>&thread=<id>` 只用于逐页走查与分享定位，缺省仍是收集页。 */
+/** `?view=captures&repo=<id>&thread=<id>` 只用于逐页走查与分享定位，缺省是随手记页。 */
 function readInitialRoute(): { view: View; repoId: string | null; threadId: string | null } {
   const params = new URLSearchParams(window.location.search);
   const requested = params.get("view");
-  const view = navItems.some((item) => item.id === requested) ? (requested as View) : "inbox";
+  const view = navItems.some((item) => item.id === requested) ? (requested as View) : "captures";
   return {
     view,
     repoId: view === "repos" ? params.get("repo") : null,
@@ -48,13 +48,13 @@ function AppShell() {
   const [repoId, setRepoId] = useState<string | null>(route.repoId);
   /** 只作为详情页的初值：真正的开关在 RepoDetail 内部，返回列表时由这里清空。 */
   const [threadId, setThreadId] = useState<string | null>(route.threadId);
-  const [counts, setCounts] = useState<ItemStatusCounts>(emptyCounts);
+  const [counts, setCounts] = useState<CaptureCounts>(emptyCounts);
   const [notice, setNotice] = useState<MigrationNotice | null>(null);
   const [noticeDismissed, setNoticeDismissed] = useState(false);
 
   const refreshCounts = useCallback(async () => {
     try {
-      setCounts(await countItemsByStatus());
+      setCounts(await countCaptures());
     } catch {
       // 角标失败不影响主流程，保留上一次的数字。
     }
@@ -62,7 +62,10 @@ function AppShell() {
 
   useEffect(() => {
     void refreshCounts();
-    return onItemsChanged(() => void refreshCounts());
+    const stopCaptures = onCapturesChanged(() => void refreshCounts());
+    return () => {
+      stopCaptures();
+    };
   }, [refreshCounts]);
 
   useEffect(() => {
@@ -123,7 +126,7 @@ function AppShell() {
         </div>
 
         <Button className="mt-5 w-full" onClick={() => void openCapture()}>
-          快速收集
+          随手记一条
         </Button>
 
         <nav className="mt-5 grid grid-cols-2 gap-1 lg:grid-cols-1" aria-label="主导航">
@@ -133,8 +136,8 @@ function AppShell() {
               active={view === item.id}
               aria-current={view === item.id ? "page" : undefined}
               trailing={
-                item.id === "inbox" ? (
-                  <span className="font-mono text-xs text-muted-foreground">{counts.pending}</span>
+                item.id === "captures" ? (
+                  <span className="font-mono text-xs text-muted-foreground">{counts.active}</span>
                 ) : null
               }
               onClick={() => navigate(item.id)}
@@ -155,8 +158,8 @@ function AppShell() {
         {showMigrationNotice && notice ? (
           <div className="flex flex-wrap items-start justify-between gap-3 callout callout-warning border-b border-border px-5 py-3 text-sm sm:px-7">
             <p className="min-w-0 leading-6">
-              数据库已升级到 v{notice.migratedTo}，旧 GitHub
-              条目已清理，请到「仓库」页重新同步一次。
+              数据库已升级到 v{notice.migratedTo}。
+              {notice.message ? <span className="ml-1">{notice.message}</span> : null}
               {notice.backupPath ? (
                 <span className="ml-1 break-all font-mono text-xs text-muted-foreground">
                   迁移前备份：{notice.backupPath}
@@ -174,7 +177,7 @@ function AppShell() {
         ) : null}
 
         <div className="flex min-h-0 flex-1 flex-col">
-          {view === "inbox" ? <Inbox /> : null}
+          {view === "captures" ? <CapturesPage /> : null}
           {view === "repos" ? (
             repoId ? (
               <RepoDetail repoId={repoId} initialThreadId={threadId} onBack={closeRepo} />

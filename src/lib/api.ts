@@ -27,16 +27,16 @@ export interface AppInfo {
 export interface MigrationNotice {
   migratedTo: number | null;
   backupPath: string | null;
+  message: string | null;
 }
 
-export type ItemKind = "note" | "link" | "github";
-export type ItemStatus = "pending" | "processed" | "archived";
-export type ItemSort = "updated" | "created";
+export type CaptureKind = "note" | "link";
+export type CaptureSort = "updated" | "created";
 
 /** 列表行：不含正文，首屏只传索引字段。 */
-export interface ItemSummary {
+export interface CaptureSummary {
   id: string;
-  kind: ItemKind;
+  kind: CaptureKind;
   source: string;
   url: string | null;
   title: string | null;
@@ -44,85 +44,86 @@ export interface ItemSummary {
   note: string | null;
   /** 挂在某个仓库下时指向该仓库。 */
   repoId: string | null;
-  status: ItemStatus;
+  /** 归档时间；null 表示未归档。 */
+  archivedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
 
-export interface Item extends ItemSummary {
+export interface Capture extends CaptureSummary {
   body: string | null;
 }
 
-export interface ItemPage {
-  items: ItemSummary[];
+export interface CapturePage {
+  captures: CaptureSummary[];
   nextCursor: string | null;
   hasMore: boolean;
 }
 
-export interface ItemPageInput {
-  status?: ItemStatus | null;
-  kind?: ItemKind | null;
+export interface CapturePageInput {
+  /** undefined / null 表示全部；false 只看未归档；true 只看已归档。 */
+  archived?: boolean | null;
+  kind?: CaptureKind | null;
   repoId?: string | null;
-  sort?: ItemSort;
+  sort?: CaptureSort;
   cursor?: string | null;
   limit?: number;
 }
 
-export interface ItemStatusCounts {
+export interface CaptureCounts {
   all: number;
-  pending: number;
-  processed: number;
+  active: number;
   archived: number;
 }
 
-export interface ItemBody {
+export interface CaptureBody {
   id: string;
-  kind: ItemKind;
+  kind: CaptureKind;
   url: string | null;
   body: string | null;
 }
 
-export interface CreateItemInput {
-  kind: ItemKind;
+export interface CreateCaptureInput {
+  kind: CaptureKind;
   source: string;
   url: string | null;
   title: string | null;
   summary: string | null;
   note: string | null;
+  /** 完整正文；笔记类由调用方写入，链接类通常留空等回源抓取。 */
+  body: string | null;
   repoId: string | null;
 }
 
-export interface CaptureItemInput {
+export interface QuickCaptureInput {
   value: string;
   note: string | null;
 }
 
-/** 更新只改内容与状态；条目与仓库的关联在创建时确定，不随编辑变化。 */
-export interface UpdateItemInput {
+/** 更新只改内容；归档状态走 archive / restore，仓库关联在创建时确定。 */
+export interface UpdateCaptureInput {
   id: string;
-  kind: ItemKind;
+  kind: CaptureKind;
   source: string;
   url: string | null;
   title: string | null;
   summary: string | null;
   note: string | null;
-  status: ItemStatus;
 }
 
 /**
  * 列表行转成更新入参：后端拒绝未知字段，所以只挑 DTO 里的字段，
- * 不能直接展开 `ItemSummary`（会带上 createdAt / updatedAt / repoId）。
+ * 不能直接展开 `CaptureSummary`（会带上 createdAt / updatedAt / repoId / archivedAt）。
  */
-export function toUpdateItemInput(item: ItemSummary, status: ItemStatus): UpdateItemInput {
+export function toUpdateCaptureInput(capture: CaptureSummary): UpdateCaptureInput {
   return {
-    id: item.id,
-    kind: item.kind,
-    source: item.source,
-    url: item.url,
-    title: item.title,
-    summary: item.summary,
-    note: item.note,
-    status,
+    id: capture.id,
+    kind: capture.kind,
+    source: capture.source,
+    url: capture.url,
+    title: capture.title,
+    summary: capture.summary,
+    note: capture.note,
   };
 }
 
@@ -242,7 +243,7 @@ export interface RepoThreadCounts {
   openIssues: number;
   reviews: number;
   releases: number;
-  items: number;
+  captures: number;
 }
 
 export interface RepoSummary {
@@ -257,7 +258,7 @@ export interface RepoSummary {
   openIssues: number;
   reviews: number;
   releases: number;
-  items: number;
+  captures: number;
   enabled: boolean;
   lastSyncedAt: string | null;
   isArchived: boolean;
@@ -308,7 +309,7 @@ export interface GithubTokenStatus {
 
 export interface ExportResult {
   path: string;
-  itemCount: number;
+  captureCount: number;
 }
 
 const commandErrorCodes: CommandErrorCode[] = ["validation", "not_found", "conflict", "internal"];
@@ -361,12 +362,12 @@ export async function getMigrationNotice(): Promise<MigrationNotice> {
   return mocked ?? call("get_migration_notice");
 }
 
-export function createItem(input: CreateItemInput): Promise<Item> {
-  return call("create_item", { input });
+export function createCapture(input: CreateCaptureInput): Promise<Capture> {
+  return call("create_capture", { input });
 }
 
-export function captureItem(input: CaptureItemInput): Promise<Item> {
-  return call("capture_item", { input });
+export function captureFromClipboard(input: QuickCaptureInput): Promise<Capture> {
+  return call("capture_from_clipboard", { input });
 }
 
 export function dismissCapture(): Promise<void> {
@@ -377,37 +378,41 @@ export function openCapture(): Promise<void> {
   return call<void>("open_capture");
 }
 
-export function getItem(id: string): Promise<Item> {
-  return call("get_item", { input: { id } });
+export function getCapture(id: string): Promise<Capture> {
+  return call("get_capture", { input: { id } });
 }
 
-export async function listItemsPage(input: ItemPageInput): Promise<ItemPage> {
+export async function listCapturesPage(input: CapturePageInput): Promise<CapturePage> {
   const mocked = await preview((data) => data.pageFor(input));
-  return mocked ?? call("list_items_page", { input });
+  return mocked ?? call("list_captures_page", { input });
 }
 
-export async function countItemsByStatus(kind?: ItemKind): Promise<ItemStatusCounts> {
+export async function countCaptures(kind?: CaptureKind): Promise<CaptureCounts> {
   const mocked = await preview((data) => data.counts);
-  return mocked ?? call("count_items_by_status", { input: kind ? { kind } : {} });
+  return mocked ?? call("count_captures", { input: kind ? { kind } : {} });
 }
 
 /** 详情正文按需加载：本地有就返回，链接类为空时会回源抓一次。 */
-export async function getItemBody(id: string): Promise<ItemBody> {
+export async function getCaptureBody(id: string): Promise<CaptureBody> {
   const mocked = await preview((data) => data.bodyFor(id));
-  return mocked ?? call("get_item_body", { input: { id } });
+  return mocked ?? call("get_capture_body", { input: { id } });
 }
 
-export function updateItem(input: UpdateItemInput): Promise<Item> {
-  return call("update_item", { input });
+export function updateCapture(input: UpdateCaptureInput): Promise<Capture> {
+  return call("update_capture", { input });
 }
 
-export function archiveItem(id: string): Promise<Item> {
-  return call("archive_item", { input: { id } });
+export function archiveCapture(id: string): Promise<Capture> {
+  return call("archive_capture", { input: { id } });
 }
 
-export async function searchItems(query: string): Promise<ItemSummary[]> {
+export function restoreCapture(id: string): Promise<Capture> {
+  return call("restore_capture", { input: { id } });
+}
+
+export async function searchCaptures(query: string): Promise<CaptureSummary[]> {
   const mocked = await preview((data) => data.search(query));
-  return mocked ?? call("search_items", { input: { query } });
+  return mocked ?? call("search_captures", { input: { query } });
 }
 
 export async function listTags(): Promise<Tag[]> {
@@ -419,13 +424,13 @@ export function createTag(input: CreateTagInput): Promise<Tag> {
   return call("create_tag", { input });
 }
 
-export function setItemTags(itemId: string, tagIds: string[]): Promise<Tag[]> {
-  return call("set_item_tags", { input: { itemId, tagIds } });
+export function setCaptureTags(captureId: string, tagIds: string[]): Promise<Tag[]> {
+  return call("set_capture_tags", { input: { captureId, tagIds } });
 }
 
-export async function getItemTags(itemId: string): Promise<Tag[]> {
-  const mocked = await preview((data) => data.itemTags[itemId] ?? []);
-  return mocked ?? call("get_item_tags", { input: { itemId } });
+export async function getCaptureTags(captureId: string): Promise<Tag[]> {
+  const mocked = await preview((data) => data.captureTags[captureId] ?? []);
+  return mocked ?? call("get_capture_tags", { input: { captureId } });
 }
 
 export function addGithubRepo(url: string): Promise<GithubRepo> {
@@ -513,10 +518,10 @@ export async function listRepoReleases(repoId: string): Promise<GithubRelease[]>
   return mocked ?? call("list_repo_releases", { input: { id: repoId } });
 }
 
-export function exportItemsJson(): Promise<ExportResult | null> {
-  return call("export_items_json");
+export function exportCapturesJson(): Promise<ExportResult | null> {
+  return call("export_captures_json");
 }
 
-export function exportItemsMarkdown(): Promise<ExportResult | null> {
-  return call("export_items_markdown");
+export function exportCapturesMarkdown(): Promise<ExportResult | null> {
+  return call("export_captures_markdown");
 }

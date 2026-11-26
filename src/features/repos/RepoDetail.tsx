@@ -16,27 +16,26 @@ import {
   cn,
 } from "../../components/ui";
 import {
-  createItem,
+  archiveCapture,
+  createCapture,
   getRepo,
   getThread,
-  listItemsPage,
+  listCapturesPage,
   listRepoReleases,
   listRepoThreads,
+  restoreCapture,
   syncGithubRepo,
-  toUpdateItemInput,
-  updateItem,
   updateRepoMeta,
+  type CaptureSummary,
   type GithubRelease,
   type GithubSyncScope,
-  type ItemStatus,
-  type ItemSummary,
   type RepoDetail as RepoDetailData,
   type ThreadDetail,
   type ThreadKind,
   type ThreadRelationship,
   type ThreadSummary,
 } from "../../lib/api";
-import { notifyItemsChanged } from "../../lib/events";
+import { notifyCapturesChanged } from "../../lib/events";
 import { formatCount, formatDate, formatRelative } from "../../lib/format";
 import { openExternal } from "../../lib/openExternal";
 import ThreadDetailPage from "./ThreadDetailPage";
@@ -48,17 +47,9 @@ import {
   threadHeadline,
 } from "./threadMeta";
 
-type TabId = "overview" | "pulls" | "issues" | "reviews" | "releases" | "items";
+type TabId = "overview" | "pulls" | "issues" | "reviews" | "releases" | "captures";
 
 const PAGE_SIZE = 50;
-
-const itemStatusLabels: Record<ItemStatus, string> = {
-  pending: "待处理",
-  processed: "已处理",
-  archived: "已归档",
-};
-
-const itemStatusOrder: ItemStatus[] = ["pending", "processed", "archived"];
 
 /** 概览面板只放摘要：优先用同步时生成的 summary，缺失时从正文压平后截一段。 */
 function overviewText(thread: ThreadDetail): string | null {
@@ -185,7 +176,7 @@ function OverviewTab({
           <div className="mt-2">
             <InlineEdit
               value={repo.customNote}
-              placeholder="记录待办、分支约定、发布节奏…"
+              placeholder="记录约定、分支策略、发布节奏…"
               multiline
               onSave={(next) => onSaveMeta(repo.customDescription ?? "", next)}
             />
@@ -215,14 +206,14 @@ function OverviewTab({
         </section>
 
         <section>
-          <SectionTitle>当前待办</SectionTitle>
+          <SectionTitle>进行中</SectionTitle>
           <dl className="divide-y divide-border text-sm">
             {[
               ["PR", repo.counts.openPullRequests],
               ["Issue", repo.counts.openIssues],
               ["评审", repo.counts.reviews],
               ["Release", repo.counts.releases],
-              ["我的条目", repo.counts.items],
+              ["相关随手记", repo.counts.captures],
             ].map(([label, value]) => (
               <div key={label} className="flex items-baseline justify-between gap-3 py-1.5">
                 <dt className="text-muted-foreground">{label}</dt>
@@ -629,8 +620,8 @@ function ReleasesTab({ repoId }: { repoId: string }) {
   );
 }
 
-function RepoItemsTab({ repoId }: { repoId: string }) {
-  const [items, setItems] = useState<ItemSummary[]>([]);
+function RepoCapturesTab({ repoId }: { repoId: string }) {
+  const [captures, setCaptures] = useState<CaptureSummary[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -642,12 +633,12 @@ function RepoItemsTab({ repoId }: { repoId: string }) {
     setLoading(true);
     setError(null);
     try {
-      const page = await listItemsPage({ repoId, limit: PAGE_SIZE });
-      setItems(page.items);
+      const page = await listCapturesPage({ repoId, limit: PAGE_SIZE });
+      setCaptures(page.captures);
       setCursor(page.nextCursor);
       setHasMore(page.hasMore);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "加载条目失败。");
+      setError(loadError instanceof Error ? loadError.message : "加载随手记失败。");
     } finally {
       setLoading(false);
     }
@@ -661,10 +652,10 @@ function RepoItemsTab({ repoId }: { repoId: string }) {
     if (!hasMore || !cursor || busy) return;
     setBusy(true);
     try {
-      const page = await listItemsPage({ repoId, cursor, limit: PAGE_SIZE });
-      setItems((current) => {
-        const seen = new Set(current.map((item) => item.id));
-        return [...current, ...page.items.filter((item) => !seen.has(item.id))];
+      const page = await listCapturesPage({ repoId, cursor, limit: PAGE_SIZE });
+      setCaptures((current) => {
+        const seen = new Set(current.map((capture) => capture.id));
+        return [...current, ...page.captures.filter((capture) => !seen.has(capture.id))];
       });
       setCursor(page.nextCursor);
       setHasMore(page.hasMore);
@@ -682,36 +673,39 @@ function RepoItemsTab({ repoId }: { repoId: string }) {
     setBusy(true);
     setError(null);
     try {
-      await createItem({
+      await createCapture({
         kind: "note",
         source: "repo",
         url: null,
         title: null,
         summary: null,
         note,
+        body: null,
         repoId,
       });
       setDraft("");
       await load();
-      notifyItemsChanged();
+      notifyCapturesChanged();
     } catch (createError) {
-      setError(createError instanceof Error ? createError.message : "添加条目失败。");
+      setError(createError instanceof Error ? createError.message : "添加随手记失败。");
     } finally {
       setBusy(false);
     }
   }
 
-  async function changeStatus(item: ItemSummary, status: ItemStatus) {
-    if (item.status === status || busy) return;
+  async function toggleArchived(capture: CaptureSummary) {
+    if (busy) return;
     setBusy(true);
     try {
-      const updated = await updateItem(toUpdateItemInput(item, status));
-      setItems((current) =>
+      const updated = capture.archivedAt
+        ? await restoreCapture(capture.id)
+        : await archiveCapture(capture.id);
+      setCaptures((current) =>
         current.map((entry) => (entry.id === updated.id ? { ...entry, ...updated } : entry)),
       );
-      notifyItemsChanged();
+      notifyCapturesChanged();
     } catch (updateError) {
-      setError(updateError instanceof Error ? updateError.message : "更新状态失败。");
+      setError(updateError instanceof Error ? updateError.message : "更新归档状态失败。");
     } finally {
       setBusy(false);
     }
@@ -729,7 +723,7 @@ function RepoItemsTab({ repoId }: { repoId: string }) {
             onChange={(event) => setDraft(event.target.value)}
           />
           <Button type="submit" className="self-start" disabled={busy || !draft.trim()}>
-            添加条目
+            添加随手记
           </Button>
         </form>
 
@@ -738,41 +732,38 @@ function RepoItemsTab({ repoId }: { repoId: string }) {
 
       {loading ? (
         <p className="px-5 py-6 font-mono text-xs text-muted-foreground sm:px-7">正在加载…</p>
-      ) : items.length === 0 ? (
+      ) : captures.length === 0 ? (
         <p className="px-5 py-6 text-sm text-muted-foreground sm:px-7">
-          还没有挂在这个仓库下的条目，可以在上面记一条。
+          还没有挂在这个仓库下的随手记，可以在上面记一条。
         </p>
       ) : (
         <div className="divide-y divide-border border-t border-border">
-          {items.map((item) => (
-            <article key={item.id} className="px-5 py-3 sm:px-7">
+          {captures.map((capture) => (
+            <article key={capture.id} className="px-5 py-3 sm:px-7">
               <p className="text-sm leading-6 whitespace-pre-wrap">
-                {item.title ?? item.note ?? item.summary ?? item.source}
+                {capture.title ?? capture.note ?? capture.summary ?? capture.source}
               </p>
               <div className="mt-1.5 flex flex-wrap items-center gap-3">
-                <span className="font-mono text-xs text-muted-foreground">
-                  {itemStatusLabels[item.status]}
-                </span>
+                {capture.archivedAt ? (
+                  <span className="font-mono text-xs text-muted-foreground">已归档</span>
+                ) : null}
                 <time className="font-mono text-xs text-muted-foreground">
-                  {formatRelative(item.updatedAt)}
+                  {formatRelative(capture.updatedAt)}
                 </time>
                 <div className="ml-auto flex items-center gap-1">
-                  {itemStatusOrder.map((status) => (
-                    <button
-                      key={status}
-                      className={cn(
-                        "h-6 rounded px-1.5 font-mono text-xs transition-colors",
-                        item.status === status
-                          ? "text-link"
-                          : "text-muted-foreground hover:text-foreground",
-                      )}
-                      type="button"
-                      disabled={busy}
-                      onClick={() => void changeStatus(item, status)}
-                    >
-                      {itemStatusLabels[status]}
-                    </button>
-                  ))}
+                  <button
+                    className={cn(
+                      "h-6 rounded px-1.5 font-mono text-xs transition-colors",
+                      capture.archivedAt
+                        ? "text-link"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void toggleArchived(capture)}
+                  >
+                    {capture.archivedAt ? "取消归档" : "归档"}
+                  </button>
                 </div>
               </div>
             </article>
@@ -884,7 +875,7 @@ function RepoDetail({
       { id: "issues", label: "Issues", count: repo?.counts.openIssues },
       { id: "reviews", label: "评审", count: repo?.counts.reviews },
       { id: "releases", label: "Release", count: repo?.counts.releases },
-      { id: "items", label: "我的条目", count: repo?.counts.items },
+      { id: "captures", label: "相关随手记", count: repo?.counts.captures },
     ],
     [repo],
   );
@@ -993,7 +984,7 @@ function RepoDetail({
           />
         ) : null}
         {tab === "releases" ? <ReleasesTab repoId={repoId} /> : null}
-        {tab === "items" ? <RepoItemsTab repoId={repoId} /> : null}
+        {tab === "captures" ? <RepoCapturesTab repoId={repoId} /> : null}
       </div>
 
       {openThreadId ? (

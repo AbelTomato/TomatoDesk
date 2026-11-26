@@ -6,8 +6,8 @@ import { Button, Input, cn } from "../../components/ui";
 import {
   addGithubRepo,
   deleteGithubToken,
-  exportItemsJson,
-  exportItemsMarkdown,
+  exportCapturesJson,
+  exportCapturesMarkdown,
   getAppInfo,
   getGithubTokenStatus,
   listGithubRepos,
@@ -199,8 +199,9 @@ function SettingsPage() {
     setExportMessage(null);
     setExportFailed(false);
     try {
-      const result = format === "json" ? await exportItemsJson() : await exportItemsMarkdown();
-      if (result) setExportMessage(`已导出 ${result.itemCount} 条内容。`);
+      const result =
+        format === "json" ? await exportCapturesJson() : await exportCapturesMarkdown();
+      if (result) setExportMessage(`已导出 ${result.captureCount} 条随手记。`);
     } catch (exportError) {
       setExportFailed(true);
       setExportMessage(exportError instanceof Error ? exportError.message : "导出失败，请重试。");

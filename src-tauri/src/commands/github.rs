@@ -48,7 +48,7 @@ pub fn remove_github_repo(
     database: State<'_, Database>,
     input: Option<serde_json::Value>,
 ) -> CommandResult<()> {
-    let input = parse_input::<super::dto::ItemIdInput>(input)?.validate()?;
+    let input = parse_input::<super::dto::IdInput>(input)?.validate()?;
     if database
         .github_repos()
         .delete(&input.id)

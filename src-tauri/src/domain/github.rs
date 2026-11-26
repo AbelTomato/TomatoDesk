@@ -325,7 +325,7 @@ pub struct RepoThreadCounts {
     pub open_issues: i64,
     pub reviews: i64,
     pub releases: i64,
-    pub items: i64,
+    pub captures: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -342,7 +342,7 @@ pub struct RepoSummary {
     pub open_issues: i64,
     pub reviews: i64,
     pub releases: i64,
-    pub items: i64,
+    pub captures: i64,
     pub enabled: bool,
     pub last_synced_at: Option<String>,
     pub is_archived: bool,

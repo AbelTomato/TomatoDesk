@@ -3,7 +3,7 @@ use tauri::State;
 use crate::{domain::Tag, infrastructure::db::Database};
 
 use super::{
-    dto::{CreateTagInput, SetItemTagsInput, parse_input},
+    dto::{CreateTagInput, IdInput, SetCaptureTagsInput, parse_input},
     error::{CommandError, CommandResult},
 };
 
@@ -19,18 +19,18 @@ pub(super) fn create_tag_in(database: &Database, input: CreateTagInput) -> Comma
         .map_err(Into::into)
 }
 
-pub(super) fn set_item_tags_in(
+pub(super) fn set_capture_tags_in(
     database: &Database,
-    input: SetItemTagsInput,
+    input: SetCaptureTagsInput,
 ) -> CommandResult<Vec<Tag>> {
     let input = input.validate()?;
     if database
-        .items()
-        .get(&input.item_id)
+        .captures()
+        .get(&input.capture_id)
         .map_err(CommandError::from)?
         .is_none()
     {
-        return Err(CommandError::not_found("item"));
+        return Err(CommandError::not_found("capture"));
     }
     for tag_id in &input.tag_ids {
         if database
@@ -44,25 +44,25 @@ pub(super) fn set_item_tags_in(
     }
     database
         .tags()
-        .set_item_tags(&input.item_id, &input.tag_ids)
+        .set_capture_tags(&input.capture_id, &input.tag_ids)
         .map_err(CommandError::from)?;
-    database.tags().for_item(&input.item_id).map_err(Into::into)
+    database
+        .tags()
+        .for_capture(&input.capture_id)
+        .map_err(Into::into)
 }
 
-pub(super) fn get_item_tags_in(
-    database: &Database,
-    input: super::dto::ItemIdInput,
-) -> CommandResult<Vec<Tag>> {
+pub(super) fn get_capture_tags_in(database: &Database, input: IdInput) -> CommandResult<Vec<Tag>> {
     let input = input.validate()?;
     if database
-        .items()
+        .captures()
         .get(&input.id)
         .map_err(CommandError::from)?
         .is_none()
     {
-        return Err(CommandError::not_found("item"));
+        return Err(CommandError::not_found("capture"));
     }
-    database.tags().for_item(&input.id).map_err(Into::into)
+    database.tags().for_capture(&input.id).map_err(Into::into)
 }
 
 #[tauri::command]
@@ -79,17 +79,17 @@ pub fn create_tag(
 }
 
 #[tauri::command]
-pub fn set_item_tags(
+pub fn set_capture_tags(
     database: State<'_, Database>,
     input: Option<serde_json::Value>,
 ) -> CommandResult<Vec<Tag>> {
-    set_item_tags_in(&database, parse_input(input)?)
+    set_capture_tags_in(&database, parse_input(input)?)
 }
 
 #[tauri::command]
-pub fn get_item_tags(
+pub fn get_capture_tags(
     database: State<'_, Database>,
     input: Option<serde_json::Value>,
 ) -> CommandResult<Vec<Tag>> {
-    get_item_tags_in(&database, parse_input(input)?)
+    get_capture_tags_in(&database, parse_input(input)?)
 }

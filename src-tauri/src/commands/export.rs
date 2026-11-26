@@ -13,17 +13,17 @@ use super::error::{CommandError, CommandResult};
 #[serde(rename_all = "camelCase")]
 pub struct ExportResult {
     pub path: String,
-    pub item_count: usize,
+    pub capture_count: usize,
 }
 
 #[tauri::command]
-pub async fn export_items_json(
+pub async fn export_captures_json(
     app: AppHandle,
     database: State<'_, Database>,
 ) -> CommandResult<Option<ExportResult>> {
     let bundle =
         application::export::build_export_bundle(&database).map_err(CommandError::internal)?;
-    let item_count = bundle.items.len();
+    let capture_count = bundle.captures.len();
     let content = application::export::to_json(&bundle).map_err(CommandError::internal)?;
     save_export(
         &app,
@@ -31,18 +31,18 @@ pub async fn export_items_json(
         "JSON 文件",
         "json",
         content,
-        item_count,
+        capture_count,
     )
 }
 
 #[tauri::command]
-pub async fn export_items_markdown(
+pub async fn export_captures_markdown(
     app: AppHandle,
     database: State<'_, Database>,
 ) -> CommandResult<Option<ExportResult>> {
     let bundle =
         application::export::build_export_bundle(&database).map_err(CommandError::internal)?;
-    let item_count = bundle.items.len();
+    let capture_count = bundle.captures.len();
     let content = application::export::to_markdown(&bundle);
     save_export(
         &app,
@@ -50,7 +50,7 @@ pub async fn export_items_markdown(
         "Markdown 文件",
         "md",
         content,
-        item_count,
+        capture_count,
     )
 }
 
@@ -60,7 +60,7 @@ fn save_export(
     filter_name: &str,
     extension: &str,
     content: String,
-    item_count: usize,
+    capture_count: usize,
 ) -> CommandResult<Option<ExportResult>> {
     let selected_path = app
         .dialog()
@@ -80,6 +80,6 @@ fn save_export(
 
     Ok(Some(ExportResult {
         path: path.to_string_lossy().into_owned(),
-        item_count,
+        capture_count,
     }))
 }

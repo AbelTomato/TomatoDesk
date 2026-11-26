@@ -4,7 +4,7 @@ import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { Button, Input, Textarea } from "../../components/ui";
-import { captureItem, dismissCapture } from "../../lib/api";
+import { captureFromClipboard, dismissCapture } from "../../lib/api";
 
 const MAX_CAPTURE_LENGTH = 16_384;
 
@@ -102,7 +102,7 @@ function QuickCapture() {
     setSaving(true);
     setError(null);
     try {
-      await captureItem({ value, note: linkUrl ? note : null });
+      await captureFromClipboard({ value, note: linkUrl ? note : null });
     } catch (captureError) {
       setError(captureError instanceof Error ? captureError.message : "保存失败，请重试。");
       setSaving(false);
@@ -122,7 +122,7 @@ function QuickCapture() {
       <form className="mx-auto flex max-w-xl flex-col gap-3" onSubmit={submit}>
         <header className="flex items-center justify-between gap-3 border-b border-border pb-2">
           <div className="flex items-baseline gap-2">
-            <h1 className="text-base font-bold tracking-tight">快速收集</h1>
+            <h1 className="text-base font-bold tracking-tight">随手记一条</h1>
             <span className="font-mono text-xs text-muted-foreground">
               {linkUrl ? "链接" : "笔记"}
             </span>
@@ -190,7 +190,7 @@ function QuickCapture() {
             className="shrink-0"
             disabled={!value.trim() || overLimit || saving}
           >
-            {saving ? "保存中…" : "保存到收集"}
+            {saving ? "保存中…" : "保存到随手记"}
           </Button>
         </footer>
       </form>

@@ -89,7 +89,7 @@ function ReposPage({ onOpenRepo, onOpenSettings }: ReposPageProps) {
           </div>
         </div>
         <p className="mt-1 text-sm text-muted-foreground">
-          按仓库查看 Pull Request、Issue、评审、Release 与自己的条目。
+          按仓库查看 Pull Request、Issue、评审、Release 与相关随手记。
         </p>
       </header>
 
@@ -160,7 +160,7 @@ function ReposPage({ onOpenRepo, onOpenSettings }: ReposPageProps) {
                 <span>Issue {repo.openIssues}</span>
                 <span>评审 {repo.reviews}</span>
                 <span>Release {repo.releases}</span>
-                <span>条目 {repo.items}</span>
+                <span>随手记 {repo.captures}</span>
                 <span className="ml-auto">同步于 {formatRelative(repo.lastSyncedAt)}</span>
               </ListItemMeta>
             </ListItem>

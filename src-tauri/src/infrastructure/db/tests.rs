@@ -1,20 +1,20 @@
 use super::Database;
 use crate::domain::{
-    GithubRelease, GithubThread, GithubThreadComment, ItemKind, ItemPageQuery, ItemSort,
-    ItemStatus, ItemSummary, KeysetCursor, NewItem, NewSyncRun, SyncRunStatus, ThreadKind,
+    CaptureKind, CapturePageQuery, CaptureSort, CaptureSummary, GithubRelease, GithubThread,
+    GithubThreadComment, KeysetCursor, NewCapture, NewSyncRun, SyncRunStatus, ThreadKind,
     ThreadQuery, ThreadRelationship, ThreadState, ThreadSummary,
 };
 use uuid::Uuid;
 
-fn item(title: &str, note: &str) -> NewItem {
-    NewItem {
-        kind: ItemKind::Note,
+fn capture(title: &str, body: &str) -> NewCapture {
+    NewCapture {
+        kind: CaptureKind::Note,
         source: "manual".into(),
         url: None,
         title: Some(title.into()),
         summary: None,
-        note: Some(note.into()),
-        body: None,
+        note: None,
+        body: Some(body.into()),
         repo_id: None,
     }
 }
@@ -65,7 +65,7 @@ fn release(repo_id: &str) -> GithubRelease {
 }
 
 #[test]
-fn migrations_are_idempotent_and_items_support_crud() {
+fn migrations_are_idempotent_and_captures_support_crud() {
     let db = Database::in_memory().unwrap();
     db.migrate().unwrap();
     let migration_count: i64 = db
@@ -77,39 +77,40 @@ fn migrations_are_idempotent_and_items_support_crud() {
             )
         })
         .unwrap();
-    assert_eq!(migration_count, 4);
-
-    let items = db.items();
-    let created = items.create(item("First title", "first note")).unwrap();
-    assert_eq!(items.get(&created.id).unwrap(), Some(created.clone()));
-    assert_eq!(items.list().unwrap(), vec![created.clone()]);
+    assert_eq!(migration_count, 5);
+    let captures = db.captures();
+    let created = captures
+        .create(capture("First title", "first body"))
+        .unwrap();
+    assert_eq!(captures.get(&created.id).unwrap(), Some(created.clone()));
+    assert_eq!(captures.list().unwrap(), vec![created.clone()]);
 
     let mut changed = created.clone();
     changed.title = Some("Updated title".into());
-    items.update(&changed).unwrap();
-    let updated = items.get(&created.id).unwrap().unwrap();
+    captures.update(&changed).unwrap();
+    let updated = captures.get(&created.id).unwrap().unwrap();
     assert_eq!(updated.title.as_deref(), Some("Updated title"));
-    assert_eq!(updated.status, ItemStatus::Pending);
+    assert_eq!(updated.archived_at, None);
 
-    assert!(items.delete(&created.id).unwrap());
-    assert_eq!(items.get(&created.id).unwrap(), None);
-    assert!(!items.delete(&created.id).unwrap());
+    assert!(captures.delete(&created.id).unwrap());
+    assert_eq!(captures.get(&created.id).unwrap(), None);
+    assert!(!captures.delete(&created.id).unwrap());
 }
 
 #[test]
-fn database_creates_parent_directories_and_persists_items() {
+fn database_creates_parent_directories_and_persists_captures() {
     let temp_dir = std::env::temp_dir().join(format!("tomatodesk-db-{}", Uuid::new_v4()));
     let database_path = temp_dir.join("nested/tomatodesk.sqlite3");
     let db = Database::open(&database_path).unwrap();
     assert_eq!(db.path(), Some(database_path.as_path()));
     let created = db
-        .items()
-        .create(item("Persistent", "survives reopen"))
+        .captures()
+        .create(capture("Persistent", "survives reopen"))
         .unwrap();
     drop(db);
 
     let reopened = Database::open(&database_path).unwrap();
-    assert_eq!(reopened.items().get(&created.id).unwrap(), Some(created));
+    assert_eq!(reopened.captures().get(&created.id).unwrap(), Some(created));
     assert_eq!(
         reopened.migrated_to(),
         None,
@@ -120,46 +121,46 @@ fn database_creates_parent_directories_and_persists_items() {
 }
 
 #[test]
-fn fts_tracks_item_insert_update_and_delete() {
+fn fts_tracks_capture_insert_update_and_delete() {
     let db = Database::in_memory().unwrap();
-    let items = db.items();
-    let created = items
-        .create(item("Rust handbook", "keep this note searchable"))
+    let captures = db.captures();
+    let created = captures
+        .create(capture("Rust handbook", "keep this body searchable"))
         .unwrap();
-    assert_eq!(items.search("handbook").unwrap().len(), 1);
-    assert_eq!(items.search("searchable").unwrap().len(), 1);
+    assert_eq!(captures.search("handbook").unwrap().len(), 1);
+    assert_eq!(captures.search("searchable").unwrap().len(), 1);
 
     let mut changed = created.clone();
     changed.title = Some("SQLite guide".into());
-    changed.note = Some("updated searchable content".into());
-    items.update(&changed).unwrap();
-    assert!(items.search("handbook").unwrap().is_empty());
-    assert_eq!(items.search("SQLite").unwrap()[0].id, created.id);
+    changed.body = Some("updated searchable content".into());
+    captures.update(&changed).unwrap();
+    assert!(captures.search("handbook").unwrap().is_empty());
+    assert_eq!(captures.search("SQLite").unwrap()[0].id, created.id);
 
-    items.delete(&created.id).unwrap();
-    assert!(items.search("SQLite").unwrap().is_empty());
+    captures.delete(&created.id).unwrap();
+    assert!(captures.search("SQLite").unwrap().is_empty());
 }
 
 #[test]
-fn tags_and_item_tag_links_obey_foreign_keys() {
+fn tags_and_capture_tag_links_obey_foreign_keys() {
     let db = Database::in_memory().unwrap();
-    let items = db.items();
+    let captures = db.captures();
     let tags = db.tags();
-    let created = items.create(item("Tagged", "item")).unwrap();
+    let created = captures.create(capture("Tagged", "body")).unwrap();
     let tag = tags.create("Reading", Some("#3b82f6")).unwrap();
 
-    tags.set_item_tags(&created.id, std::slice::from_ref(&tag.id))
+    tags.set_capture_tags(&created.id, std::slice::from_ref(&tag.id))
         .unwrap();
-    assert_eq!(tags.for_item(&created.id).unwrap(), vec![tag.clone()]);
+    assert_eq!(tags.for_capture(&created.id).unwrap(), vec![tag.clone()]);
     assert_eq!(tags.get(&tag.id).unwrap(), Some(tag.clone()));
     assert_eq!(tags.list().unwrap(), vec![tag.clone()]);
     assert!(
-        tags.set_item_tags("missing-item", std::slice::from_ref(&tag.id))
+        tags.set_capture_tags("missing-capture", std::slice::from_ref(&tag.id))
             .is_err()
     );
 
-    items.delete(&created.id).unwrap();
-    assert!(tags.for_item(&created.id).unwrap().is_empty());
+    captures.delete(&created.id).unwrap();
+    assert!(tags.for_capture(&created.id).unwrap().is_empty());
     assert!(tags.delete(&tag.id).unwrap());
 }
 
@@ -252,35 +253,35 @@ fn repo_workspace_upserts_threads_releases_and_counts_by_relation() {
     );
     assert_eq!(detail.counts.releases, 1);
 
-    // 个人条目可以挂到仓库下，并在详情里单独计数。
+    // 随手记可以挂到仓库下，并在详情里单独计数。
     let attached = db
-        .items()
-        .create(NewItem {
+        .captures()
+        .create(NewCapture {
             repo_id: Some(repo.id.clone()),
-            ..item("仓库笔记", "记一条")
+            ..capture("仓库笔记", "记一条")
         })
         .unwrap();
     assert_eq!(attached.repo_id.as_deref(), Some(repo.id.as_str()));
-    let items = db
-        .items()
-        .page(&ItemPageQuery {
-            status: None,
+    let captures = db
+        .captures()
+        .page(&CapturePageQuery {
+            archived: None,
             kind: None,
             repo_id: Some(repo.id.clone()),
-            sort: ItemSort::Updated,
+            sort: CaptureSort::Updated,
             cursor: None,
             limit: 10,
         })
         .unwrap();
-    assert_eq!(items.items, vec![ItemSummary::from(&attached)]);
-    assert_eq!(repos.counts(&repo.id).unwrap().items, 1);
+    assert_eq!(captures.captures, vec![CaptureSummary::from(&attached)]);
+    assert_eq!(repos.counts(&repo.id).unwrap().captures, 1);
 
     assert_eq!(
         db.github_releases().list_for_repo(&repo.id).unwrap().len(),
         1
     );
 
-    // 删除仓库会连带清掉线程与 Release，个人条目保留但解除关联。
+    // 删除仓库会连带清掉线程与 Release，随手记保留但解除关联。
     assert!(repos.delete(&repo.id).unwrap());
     assert!(db.github_threads().get(&first.id).unwrap().is_none());
     assert!(
@@ -289,7 +290,10 @@ fn repo_workspace_upserts_threads_releases_and_counts_by_relation() {
             .unwrap()
             .is_empty()
     );
-    assert_eq!(db.items().get(&attached.id).unwrap().unwrap().repo_id, None);
+    assert_eq!(
+        db.captures().get(&attached.id).unwrap().unwrap().repo_id,
+        None
+    );
 }
 
 #[test]
@@ -545,3 +549,113 @@ fn workspace_migration_moves_github_items_out_of_the_inbox() {
         .unwrap();
     assert_eq!(item_columns, 1);
 }
+
+#[test]
+fn capture_migration_maps_status_note_body_and_tags() {
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    connection
+        .execute_batch("PRAGMA foreign_keys = ON;")
+        .unwrap();
+    for migration in [
+        include_str!("../../../migrations/0001_initial.sql"),
+        include_str!("../../../migrations/0002_item_body.sql"),
+        include_str!("../../../migrations/0003_repo_workspace.sql"),
+    ] {
+        connection.execute_batch(migration).unwrap();
+    }
+    connection
+        .execute_batch(
+            "INSERT INTO tags(id, name) VALUES ('tag', 'Reading');
+             INSERT INTO items(id, kind, source, title, note, status)
+                 VALUES ('note', 'note', 'manual', 'Note', 'searchable body', 'pending');
+             INSERT INTO items(id, kind, source, url, title, summary, note, status)
+                 VALUES ('link', 'link', 'clipboard', 'https://example.com', 'Link', '摘要', '备注', 'archived');
+             INSERT INTO items(id, kind, source, note, status)
+                 VALUES ('processed', 'note', 'manual', 'processed body', 'processed');
+             INSERT INTO item_tags(item_id, tag_id) VALUES ('note', 'tag');",
+        )
+        .unwrap();
+
+    connection
+        .execute_batch(include_str!("../../../migrations/0005_capture_module.sql"))
+        .unwrap();
+
+    let items_table: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'items'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(items_table, 0, "items is renamed to captures");
+    let status_column: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('captures') WHERE name = 'status'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(status_column, 0, "status is removed");
+
+    let (body, note, summary, archived_at): (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = connection
+        .query_row(
+            "SELECT body, note, summary, archived_at FROM captures WHERE id = 'note'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(body.as_deref(), Some("searchable body"));
+    assert_eq!(note, None);
+    assert_eq!(summary.as_deref(), Some("searchable body"));
+    assert_eq!(archived_at, None, "pending becomes active");
+
+    let (body, note, source, archived_at): (
+        Option<String>,
+        Option<String>,
+        String,
+        Option<String>,
+    ) = connection
+        .query_row(
+            "SELECT body, note, source, archived_at FROM captures WHERE id = 'link'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(body, None);
+    assert_eq!(note.as_deref(), Some("备注"));
+    assert_eq!(source, "quick_capture");
+    assert!(archived_at.is_some(), "archived keeps its timestamp");
+
+    let archived_at: Option<String> = connection
+        .query_row(
+            "SELECT archived_at FROM captures WHERE id = 'processed'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(archived_at, None, "processed becomes active");
+
+    let fts_hits: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM captures_fts WHERE captures_fts MATCH ?1",
+            ["\"searchable\""],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(fts_hits, 1, "FTS is rebuilt against captures");
+
+    let tag_links: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM capture_tags WHERE capture_id = 'note' AND tag_id = 'tag'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(tag_links, 1, "tag links survive the rename");
+}
+

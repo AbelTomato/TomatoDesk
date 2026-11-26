@@ -2,7 +2,7 @@ import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import AppShell from "./app/AppShell";
-import QuickCapture from "./features/capture/QuickCapture";
+import QuickCapture from "./features/quick-capture/QuickCapture";
 import StyleGuide from "./features/dev/StyleGuide";
 
 const params = new URLSearchParams(window.location.search);

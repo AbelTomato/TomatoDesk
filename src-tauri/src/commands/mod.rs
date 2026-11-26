@@ -1,10 +1,10 @@
 mod app;
-mod capture;
+mod captures;
 mod dto;
 mod error;
 mod export;
 mod github;
-mod items;
+mod quick_capture;
 mod repos;
 mod tags;
 
@@ -12,9 +12,9 @@ mod tags;
 mod tests;
 
 pub use app::*;
-pub use capture::*;
+pub use captures::*;
 pub use export::*;
 pub use github::*;
-pub use items::*;
+pub use quick_capture::*;
 pub use repos::*;
 pub use tags::*;

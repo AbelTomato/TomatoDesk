@@ -2,50 +2,53 @@ use serde_json::json;
 
 use crate::{
     commands::{
+        captures,
         dto::{
-            CountItemsInput, CreateItemInput, CreateTagInput, ItemIdInput, ListItemsPageInput,
-            ListRepoThreadsInput, SearchItemsInput, SetItemTagsInput, UpdateItemInput,
+            CountCapturesInput, CreateCaptureInput, CreateTagInput, IdInput, ListCapturesPageInput,
+            ListRepoThreadsInput, SearchCapturesInput, SetCaptureTagsInput, UpdateCaptureInput,
             UpdateRepoMetaInput,
         },
         error::CommandErrorCode,
-        items, repos, tags,
+        repos, tags,
     },
-    domain::{ItemKind, ItemSort, ItemStatus, ItemSummary},
+    domain::{CaptureKind, CaptureSort, CaptureSummary},
     infrastructure::db::Database,
 };
 
 #[test]
-fn item_commands_support_create_list_search_update_and_archive() {
+fn capture_commands_support_create_list_search_update_and_archive() {
     let database = Database::in_memory().unwrap();
-    let created = items::create_item_in(
+    let created = captures::create_capture_in(
         &database,
-        CreateItemInput {
-            kind: ItemKind::Note,
+        CreateCaptureInput {
+            kind: CaptureKind::Note,
             source: " manual ".into(),
             url: None,
             title: Some("Rust handbook".into()),
             summary: None,
-            note: Some("save this".into()),
+            note: None,
+            body: Some("save this".into()),
             repo_id: None,
         },
     )
     .unwrap();
 
     assert_eq!(created.source, "manual");
+    assert_eq!(created.body.as_deref(), Some("save this"));
     assert_eq!(
-        items::get_item_in(
+        captures::get_capture_in(
             &database,
-            ItemIdInput {
+            IdInput {
                 id: created.id.clone()
             }
         )
         .unwrap(),
         created
     );
-    let page = items::list_items_page_in(
+    let page = captures::list_captures_page_in(
         &database,
-        ListItemsPageInput {
-            status: None,
+        ListCapturesPageInput {
+            archived: None,
             kind: None,
             repo_id: None,
             sort: None,
@@ -54,39 +57,38 @@ fn item_commands_support_create_list_search_update_and_archive() {
         },
     )
     .unwrap();
-    assert_eq!(page.items, vec![ItemSummary::from(&created)]);
+    assert_eq!(page.captures, vec![CaptureSummary::from(&created)]);
     assert!(!page.has_more);
     assert_eq!(page.next_cursor, None);
     assert_eq!(
-        items::search_items_in(
+        captures::search_captures_in(
             &database,
-            SearchItemsInput {
+            SearchCapturesInput {
                 query: "handbook".into()
             }
         )
         .unwrap(),
-        vec![ItemSummary::from(&created)]
+        vec![CaptureSummary::from(&created)]
     );
 
-    let updated = items::update_item_in(
+    let updated = captures::update_capture_in(
         &database,
-        UpdateItemInput {
+        UpdateCaptureInput {
             id: created.id.clone(),
-            kind: ItemKind::Link,
-            source: "clipboard".into(),
+            kind: CaptureKind::Link,
+            source: "quick_capture".into(),
             url: Some("https://example.com".into()),
             title: Some("Example".into()),
             summary: None,
             note: None,
-            status: ItemStatus::Processed,
         },
     )
     .unwrap();
-    assert_eq!(updated.status, ItemStatus::Processed);
+    assert_eq!(updated.kind, CaptureKind::Link);
     assert!(
-        items::search_items_in(
+        captures::search_captures_in(
             &database,
-            SearchItemsInput {
+            SearchCapturesInput {
                 query: "handbook".into()
             }
         )
@@ -94,28 +96,71 @@ fn item_commands_support_create_list_search_update_and_archive() {
         .is_empty()
     );
 
-    let archived = items::archive_item_in(
+    let archived = captures::archive_capture_in(
         &database,
-        ItemIdInput {
+        IdInput {
             id: created.id.clone(),
         },
     )
     .unwrap();
-    assert_eq!(archived.status, ItemStatus::Archived);
+    assert!(archived.archived_at.is_some());
+    assert!(
+        captures::list_captures_page_in(
+            &database,
+            ListCapturesPageInput {
+                archived: Some(false),
+                kind: None,
+                repo_id: None,
+                sort: None,
+                cursor: None,
+                limit: None,
+            },
+        )
+        .unwrap()
+        .captures
+        .is_empty()
+    );
+    assert_eq!(
+        captures::list_captures_page_in(
+            &database,
+            ListCapturesPageInput {
+                archived: Some(true),
+                kind: None,
+                repo_id: None,
+                sort: None,
+                cursor: None,
+                limit: None,
+            },
+        )
+        .unwrap()
+        .captures
+        .len(),
+        1
+    );
+
+    let restored = captures::restore_capture_in(
+        &database,
+        IdInput {
+            id: created.id.clone(),
+        },
+    )
+    .unwrap();
+    assert_eq!(restored.archived_at, None);
 }
 
 #[test]
-fn item_and_tag_commands_reject_invalid_input_with_a_stable_error_shape() {
+fn capture_and_tag_commands_reject_invalid_input_with_a_stable_error_shape() {
     let database = Database::in_memory().unwrap();
-    let error = items::create_item_in(
+    let error = captures::create_capture_in(
         &database,
-        CreateItemInput {
-            kind: ItemKind::Note,
+        CreateCaptureInput {
+            kind: CaptureKind::Note,
             source: "  ".into(),
             url: None,
             title: None,
             summary: None,
-            note: Some("note".into()),
+            note: None,
+            body: Some("note".into()),
             repo_id: None,
         },
     )
@@ -139,17 +184,18 @@ fn item_and_tag_commands_reject_invalid_input_with_a_stable_error_shape() {
 }
 
 #[test]
-fn tag_commands_create_list_and_replace_item_tags() {
+fn tag_commands_create_list_and_replace_capture_tags() {
     let database = Database::in_memory().unwrap();
-    let item = items::create_item_in(
+    let capture = captures::create_capture_in(
         &database,
-        CreateItemInput {
-            kind: ItemKind::Note,
+        CreateCaptureInput {
+            kind: CaptureKind::Note,
             source: "manual".into(),
             url: None,
-            title: Some("Tagged item".into()),
+            title: Some("Tagged capture".into()),
             summary: None,
             note: None,
+            body: Some("body".into()),
             repo_id: None,
         },
     )
@@ -166,10 +212,10 @@ fn tag_commands_create_list_and_replace_item_tags() {
     assert_eq!(tag.name, "Reading");
     assert_eq!(tags::list_tags_in(&database).unwrap(), vec![tag.clone()]);
     assert_eq!(
-        tags::set_item_tags_in(
+        tags::set_capture_tags_in(
             &database,
-            SetItemTagsInput {
-                item_id: item.id.clone(),
+            SetCaptureTagsInput {
+                capture_id: capture.id.clone(),
                 tag_ids: vec![tag.id.clone(), tag.id.clone()]
             },
         )
@@ -177,10 +223,10 @@ fn tag_commands_create_list_and_replace_item_tags() {
         vec![tag]
     );
 
-    let error = tags::set_item_tags_in(
+    let error = tags::set_capture_tags_in(
         &database,
-        SetItemTagsInput {
-            item_id: item.id,
+        SetCaptureTagsInput {
+            capture_id: capture.id,
             tag_ids: vec!["missing-tag".into()],
         },
     )
@@ -199,9 +245,9 @@ fn tag_commands_create_list_and_replace_item_tags() {
 }
 
 #[test]
-fn request_dtos_reject_unknown_fields_and_missing_items_use_not_found_errors() {
+fn request_dtos_reject_unknown_fields_and_missing_captures_use_not_found_errors() {
     assert!(
-        serde_json::from_value::<CreateItemInput>(json!({
+        serde_json::from_value::<CreateCaptureInput>(json!({
             "kind": "note",
             "source": "manual",
             "unexpected": true
@@ -209,7 +255,7 @@ fn request_dtos_reject_unknown_fields_and_missing_items_use_not_found_errors() {
         .is_err()
     );
 
-    let error = super::dto::parse_input::<CreateItemInput>(Some(json!({
+    let error = super::dto::parse_input::<CreateCaptureInput>(Some(json!({
         "kind": "note",
         "source": "manual",
         "unexpected": true
@@ -218,9 +264,9 @@ fn request_dtos_reject_unknown_fields_and_missing_items_use_not_found_errors() {
     assert_eq!(error.code, CommandErrorCode::Validation);
 
     let database = Database::in_memory().unwrap();
-    let error = items::get_item_in(
+    let error = captures::get_capture_in(
         &database,
-        ItemIdInput {
+        IdInput {
             id: "missing".into(),
         },
     )
@@ -229,19 +275,20 @@ fn request_dtos_reject_unknown_fields_and_missing_items_use_not_found_errors() {
 }
 
 #[test]
-fn item_pages_walk_with_keyset_cursors_and_counts_match_the_rows() {
+fn capture_pages_walk_with_keyset_cursors_and_counts_match_the_rows() {
     let database = Database::in_memory().unwrap();
     let mut created_ids = Vec::new();
     for index in 0..5 {
-        let created = items::create_item_in(
+        let created = captures::create_capture_in(
             &database,
-            CreateItemInput {
-                kind: ItemKind::Note,
+            CreateCaptureInput {
+                kind: CaptureKind::Note,
                 source: "manual".into(),
                 url: None,
-                title: Some(format!("Item {index}")),
+                title: Some(format!("Capture {index}")),
                 summary: None,
                 note: None,
+                body: Some(format!("body {index}")),
                 repo_id: None,
             },
         )
@@ -253,20 +300,20 @@ fn item_pages_walk_with_keyset_cursors_and_counts_match_the_rows() {
     let mut cursor = None;
     let mut pages = 0;
     loop {
-        let page = items::list_items_page_in(
+        let page = captures::list_captures_page_in(
             &database,
-            ListItemsPageInput {
-                status: None,
+            ListCapturesPageInput {
+                archived: None,
                 kind: None,
                 repo_id: None,
-                sort: Some(ItemSort::Updated),
+                sort: Some(CaptureSort::Updated),
                 cursor: cursor.clone(),
                 limit: Some(2),
             },
         )
         .unwrap();
         pages += 1;
-        collected.extend(page.items.into_iter().map(|item| item.id));
+        collected.extend(page.captures.into_iter().map(|capture| capture.id));
         match page.next_cursor {
             Some(next) if page.has_more => cursor = Some(next),
             _ => break,
@@ -280,10 +327,9 @@ fn item_pages_walk_with_keyset_cursors_and_counts_match_the_rows() {
     unique.dedup();
     assert_eq!(unique.len(), 5);
 
-    let counts = items::count_items_in(&database, CountItemsInput::default()).unwrap();
+    let counts = captures::count_captures_in(&database, CountCapturesInput::default()).unwrap();
     assert_eq!(counts.all, 5);
-    assert_eq!(counts.pending, 5);
-    assert_eq!(counts.processed, 0);
+    assert_eq!(counts.active, 5);
     assert_eq!(counts.archived, 0);
     assert_eq!(
         created_ids.len(),
@@ -293,13 +339,13 @@ fn item_pages_walk_with_keyset_cursors_and_counts_match_the_rows() {
 }
 
 #[test]
-fn item_pages_reject_invalid_cursors_and_out_of_range_limits() {
+fn capture_pages_reject_invalid_cursors_and_out_of_range_limits() {
     let database = Database::in_memory().unwrap();
 
-    let error = items::list_items_page_in(
+    let error = captures::list_captures_page_in(
         &database,
-        ListItemsPageInput {
-            status: None,
+        ListCapturesPageInput {
+            archived: None,
             kind: None,
             repo_id: None,
             sort: None,
@@ -311,10 +357,10 @@ fn item_pages_reject_invalid_cursors_and_out_of_range_limits() {
     assert_eq!(error.code, CommandErrorCode::Validation);
 
     for limit in [0, 201] {
-        let error = items::list_items_page_in(
+        let error = captures::list_captures_page_in(
             &database,
-            ListItemsPageInput {
-                status: None,
+            ListCapturesPageInput {
+                archived: None,
                 kind: None,
                 repo_id: None,
                 sort: None,
@@ -391,7 +437,7 @@ fn repo_commands_expose_meta_and_reject_missing_threads() {
 
     let error = repos::get_thread_in(
         &database,
-        ItemIdInput {
+        IdInput {
             id: "missing".into(),
         },
     )
@@ -400,28 +446,29 @@ fn repo_commands_expose_meta_and_reject_missing_threads() {
 }
 
 #[test]
-fn items_can_be_scoped_to_a_repository() {
+fn captures_can_be_scoped_to_a_repository() {
     let database = Database::in_memory().unwrap();
     let repo = database.github_repos().create("owner", "project").unwrap();
-    let created = items::create_item_in(
+    let created = captures::create_capture_in(
         &database,
-        CreateItemInput {
-            kind: ItemKind::Note,
+        CreateCaptureInput {
+            kind: CaptureKind::Note,
             source: "repo".into(),
             url: None,
             title: Some("仓库笔记".into()),
             summary: None,
-            note: Some("记一条".into()),
+            note: None,
+            body: Some("记一条".into()),
             repo_id: Some(repo.id.clone()),
         },
     )
     .unwrap();
     assert_eq!(created.repo_id.as_deref(), Some(repo.id.as_str()));
 
-    let page = items::list_items_page_in(
+    let page = captures::list_captures_page_in(
         &database,
-        ListItemsPageInput {
-            status: None,
+        ListCapturesPageInput {
+            archived: None,
             kind: None,
             repo_id: Some(repo.id.clone()),
             sort: None,
@@ -430,12 +477,12 @@ fn items_can_be_scoped_to_a_repository() {
         },
     )
     .unwrap();
-    assert_eq!(page.items, vec![ItemSummary::from(&created)]);
+    assert_eq!(page.captures, vec![CaptureSummary::from(&created)]);
 
-    let unscoped = items::list_items_page_in(
+    let unscoped = captures::list_captures_page_in(
         &database,
-        ListItemsPageInput {
-            status: None,
+        ListCapturesPageInput {
+            archived: None,
             kind: None,
             repo_id: None,
             sort: None,
@@ -445,28 +492,28 @@ fn items_can_be_scoped_to_a_repository() {
     )
     .unwrap();
     assert_eq!(
-        unscoped.items.len(),
+        unscoped.captures.len(),
         1,
-        "the inbox still lists repo notes as personal items"
+        "the capture list still includes repo notes"
     );
 
-    let updated = items::update_item_in(
+    let updated = captures::update_capture_in(
         &database,
-        UpdateItemInput {
+        UpdateCaptureInput {
             id: created.id.clone(),
-            kind: ItemKind::Note,
+            kind: CaptureKind::Note,
             source: "repo".into(),
             url: None,
             title: Some("仓库笔记".into()),
             summary: None,
             note: Some("改一条".into()),
-            status: ItemStatus::Processed,
         },
     )
     .unwrap();
     assert_eq!(
         updated.repo_id.as_deref(),
         Some(repo.id.as_str()),
-        "editing an item keeps its repository association"
+        "editing a capture keeps its repository association"
     );
 }
+

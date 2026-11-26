@@ -7,9 +7,7 @@ use crate::{
 };
 
 use super::{
-    dto::{
-        ItemIdInput, ListRepoThreadsInput, ThreadCommentsInput, UpdateRepoMetaInput, parse_input,
-    },
+    dto::{IdInput, ListRepoThreadsInput, ThreadCommentsInput, UpdateRepoMetaInput, parse_input},
     error::{CommandError, CommandResult},
 };
 
@@ -17,7 +15,7 @@ pub(super) fn list_repos_in(database: &Database) -> CommandResult<Vec<RepoSummar
     database.github_repos().list_summaries().map_err(Into::into)
 }
 
-pub(super) fn get_repo_in(database: &Database, input: ItemIdInput) -> CommandResult<RepoDetail> {
+pub(super) fn get_repo_in(database: &Database, input: IdInput) -> CommandResult<RepoDetail> {
     let input = input.validate()?;
     database
         .github_repos()
@@ -38,7 +36,7 @@ pub(super) fn update_repo_meta_in(
     if !changed {
         return Err(CommandError::not_found("GitHub repository"));
     }
-    get_repo_in(database, ItemIdInput { id })
+    get_repo_in(database, IdInput { id })
 }
 
 pub(super) fn list_repo_threads_in(
@@ -49,10 +47,7 @@ pub(super) fn list_repo_threads_in(
     database.github_threads().page(&query).map_err(Into::into)
 }
 
-pub(super) fn get_thread_in(
-    database: &Database,
-    input: ItemIdInput,
-) -> CommandResult<ThreadDetail> {
+pub(super) fn get_thread_in(database: &Database, input: IdInput) -> CommandResult<ThreadDetail> {
     let input = input.validate()?;
     database
         .github_threads()
@@ -63,7 +58,7 @@ pub(super) fn get_thread_in(
 
 pub(super) fn list_repo_releases_in(
     database: &Database,
-    input: ItemIdInput,
+    input: IdInput,
 ) -> CommandResult<Vec<GithubRelease>> {
     let input = input.validate()?;
     database

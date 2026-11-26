@@ -2,15 +2,15 @@ use chrono::{SecondsFormat, Utc};
 use serde::Serialize;
 
 use crate::{
-    domain::{GithubRepo, Item, ItemKind, ItemStatus, Tag},
+    domain::{Capture, CaptureKind, GithubRepo, Tag},
     infrastructure::db::Database,
 };
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ExportItem {
+pub struct ExportCapture {
     #[serde(flatten)]
-    pub item: Item,
+    pub capture: Capture,
     pub tags: Vec<Tag>,
 }
 
@@ -29,18 +29,21 @@ pub struct ExportBundle {
     pub exported_at: String,
     pub tags: Vec<Tag>,
     pub github_repositories: Vec<ExportRepository>,
-    pub items: Vec<ExportItem>,
+    pub captures: Vec<ExportCapture>,
 }
 
 pub fn build_export_bundle(database: &Database) -> Result<ExportBundle, String> {
-    let items = database.items().list().map_err(|error| error.to_string())?;
-    let mut exported_items = Vec::with_capacity(items.len());
-    for item in items {
+    let captures = database
+        .captures()
+        .list()
+        .map_err(|error| error.to_string())?;
+    let mut exported_captures = Vec::with_capacity(captures.len());
+    for capture in captures {
         let tags = database
             .tags()
-            .for_item(&item.id)
+            .for_capture(&capture.id)
             .map_err(|error| error.to_string())?;
-        exported_items.push(ExportItem { item, tags });
+        exported_captures.push(ExportCapture { capture, tags });
     }
 
     let tags = database.tags().list().map_err(|error| error.to_string())?;
@@ -57,11 +60,11 @@ pub fn build_export_bundle(database: &Database) -> Result<ExportBundle, String> 
         .collect();
 
     Ok(ExportBundle {
-        format_version: 1,
+        format_version: 2,
         exported_at: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
         tags,
         github_repositories,
-        items: exported_items,
+        captures: exported_captures,
     })
 }
 
@@ -71,9 +74,9 @@ pub fn to_json(bundle: &ExportBundle) -> Result<String, String> {
 
 pub fn to_markdown(bundle: &ExportBundle) -> String {
     let mut output = format!(
-        "# TomatoDesk 导出\n\n- 导出时间：{}\n- 条目数：{}\n\n",
+        "# TomatoDesk 导出\n\n- 导出时间：{}\n- 随手记数：{}\n\n",
         bundle.exported_at,
-        bundle.items.len()
+        bundle.captures.len()
     );
 
     if !bundle.tags.is_empty() {
@@ -97,25 +100,27 @@ pub fn to_markdown(bundle: &ExportBundle) -> String {
         output.push('\n');
     }
 
-    output.push_str("## 收集内容\n\n");
-    for exported in &bundle.items {
-        let item = &exported.item;
-        let title = item
+    output.push_str("## 随手记\n\n");
+    for exported in &bundle.captures {
+        let capture = &exported.capture;
+        let title = capture
             .title
             .as_deref()
-            .or(item.summary.as_deref())
-            .or(item.note.as_deref())
-            .or(item.url.as_deref())
+            .or(capture.summary.as_deref())
+            .or(capture.note.as_deref())
+            .or(capture.url.as_deref())
             .unwrap_or("未命名");
         output.push_str(&format!("### {}\n\n", markdown_heading(title)));
         output.push_str(&format!(
-            "- 类型：{}\n- 状态：{}\n- 来源：{}\n- 创建时间：{}\n- 更新时间：{}\n",
-            kind_label(item.kind),
-            status_label(item.status),
-            markdown_text(&item.source),
-            item.created_at,
-            item.updated_at
+            "- 类型：{}\n- 来源：{}\n- 创建时间：{}\n- 更新时间：{}\n",
+            kind_label(capture.kind),
+            markdown_text(&capture.source),
+            capture.created_at,
+            capture.updated_at
         ));
+        if let Some(archived_at) = &capture.archived_at {
+            output.push_str(&format!("- 归档时间：{archived_at}\n"));
+        }
         if !exported.tags.is_empty() {
             output.push_str(&format!(
                 "- 标签：{}\n",
@@ -127,13 +132,13 @@ pub fn to_markdown(bundle: &ExportBundle) -> String {
                     .join("、")
             ));
         }
-        if let Some(url) = &item.url {
+        if let Some(url) = &capture.url {
             output.push_str(&format!("- URL：{}\n", markdown_text(url)));
         }
-        if let Some(summary) = &item.summary {
+        if let Some(summary) = &capture.summary {
             output.push_str(&format!("\n摘要：\n{}\n", markdown_quote(summary)));
         }
-        if let Some(note) = &item.note {
+        if let Some(note) = &capture.note {
             output.push_str(&format!("\n备注：\n{}\n", markdown_quote(note)));
         }
         output.push('\n');
@@ -142,19 +147,10 @@ pub fn to_markdown(bundle: &ExportBundle) -> String {
     output
 }
 
-fn kind_label(kind: ItemKind) -> &'static str {
+fn kind_label(kind: CaptureKind) -> &'static str {
     match kind {
-        ItemKind::Note => "笔记",
-        ItemKind::Link => "链接",
-        ItemKind::Github => "GitHub",
-    }
-}
-
-fn status_label(status: ItemStatus) -> &'static str {
-    match status {
-        ItemStatus::Pending => "待处理",
-        ItemStatus::Processed => "已处理",
-        ItemStatus::Archived => "已归档",
+        CaptureKind::Note => "笔记",
+        CaptureKind::Link => "链接",
     }
 }
 

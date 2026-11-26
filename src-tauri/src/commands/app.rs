@@ -11,12 +11,13 @@ pub struct AppInfo {
     pub environment: &'static str,
 }
 
-/// 本次启动执行了数据库迁移时，前端据此提示「旧 GitHub 条目已清理，需要重新同步」。
+/// 本次启动执行了数据库迁移时，前端据此提示迁移结果。
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MigrationNotice {
     pub migrated_to: Option<i64>,
     pub backup_path: Option<String>,
+    pub message: Option<String>,
 }
 
 #[tauri::command]
@@ -39,5 +40,6 @@ pub fn get_migration_notice(database: State<'_, Database>) -> MigrationNotice {
         backup_path: database
             .migration_backup()
             .map(|path| path.to_string_lossy().into_owned()),
+        message: database.migration_message(),
     }
 }

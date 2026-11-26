@@ -1,14 +1,14 @@
+mod capture;
 mod github_release;
 mod github_repo;
 mod github_thread;
-mod item;
 mod sync_run;
 mod tag;
 
+pub use capture::CaptureRepository;
 pub use github_release::GithubReleaseRepository;
 pub use github_repo::GithubRepoRepository;
 pub use github_thread::GithubThreadRepository;
-pub use item::ItemRepository;
 pub use sync_run::SyncRunRepository;
 pub use tag::TagRepository;
 
