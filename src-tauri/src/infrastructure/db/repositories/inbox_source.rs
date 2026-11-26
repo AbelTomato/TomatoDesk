@@ -30,6 +30,15 @@ type RawSource = (
     String,
 );
 
+/// 邮箱来源一行：展示字段 + 非敏感配置原文（地址、主机、端口、加密方式、文件夹）。
+///
+/// 配置原文由 `infrastructure::email::EmailConfig` 负责解析，仓储层不解释 JSON。
+#[derive(Debug, Clone)]
+pub struct EmailSourceRow {
+    pub source: InboxSource,
+    pub config_json: String,
+}
+
 pub struct InboxSourceRepository {
     database: Database,
 }
@@ -83,6 +92,128 @@ impl InboxSourceRepository {
                 InboxSourceKind::Github,
                 GITHUB_SOURCE_NAME,
             )
+        })
+    }
+
+    /// 保存邮箱账户：id 由「地址 + 主机」派生，所以同一账户重复保存是更新而不是新增。
+    ///
+    /// 冲突时清空 `cursor`：地址、主机、文件夹任一处改动后旧 UID 都可能失效，
+    /// 按首次窗口重扫最安全；重复消息由 `(source_id, external_id)` 去重，不会产生副本。
+    /// 同时清掉 `last_error`，因为用户刚刚可能已经改好了授权码。
+    pub fn upsert_email(&self, id: &str, name: &str, config_json: &str) -> DbResult<InboxSource> {
+        self.database.with_connection(|connection| {
+            connection.execute(
+                "INSERT INTO inbox_sources(id, kind, name, config_json)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(id) DO UPDATE SET
+                     name = excluded.name,
+                     config_json = excluded.config_json,
+                     enabled = 1,
+                     cursor = NULL,
+                     last_error = NULL,
+                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+                params![id, InboxSourceKind::Email.as_str(), name, config_json],
+            )?;
+            connection
+                .query_row(
+                    &format!("SELECT {SOURCE_FIELDS} FROM inbox_sources WHERE id = ?1"),
+                    [id],
+                    raw_source,
+                )
+                .optional()?
+                .map(decode_source)
+                .transpose()?
+                .ok_or(DbError::NotFound("inbox source"))
+        })
+    }
+
+    /// 列出全部邮箱来源，连同非敏感配置原文一起返回，供同步与设置页使用。
+    pub fn list_email(&self) -> DbResult<Vec<EmailSourceRow>> {
+        self.database.with_connection(|connection| {
+            let mut statement = connection.prepare(&format!(
+                "SELECT {SOURCE_FIELDS}, config_json FROM inbox_sources
+                 WHERE kind = ?1
+                 ORDER BY created_at ASC, id ASC"
+            ))?;
+            let rows = statement.query_map([InboxSourceKind::Email.as_str()], |row| {
+                Ok((raw_source(row)?, row.get::<_, String>(8)?))
+            })?;
+            rows.map(|row| {
+                let (raw, config_json) = row?;
+                Ok(EmailSourceRow {
+                    source: decode_source(raw)?,
+                    config_json,
+                })
+            })
+            .collect()
+        })
+    }
+
+    /// 非敏感配置原文；来源不存在时返回 `None`。
+    pub fn config(&self, id: &str) -> DbResult<Option<String>> {
+        self.database.with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT config_json FROM inbox_sources WHERE id = ?1",
+                    [id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(Into::into)
+        })
+    }
+
+    pub fn save_config(&self, id: &str, config_json: &str) -> DbResult<()> {
+        self.database.with_connection(|connection| {
+            connection.execute(
+                "UPDATE inbox_sources
+                 SET config_json = ?2,
+                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE id = ?1",
+                params![id, config_json],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// 软停用：不删来源行，避免 `inbox_messages` 的 `ON DELETE CASCADE` 把历史消息一起清掉。
+    pub fn set_enabled(&self, id: &str, enabled: bool) -> DbResult<()> {
+        self.database.with_connection(|connection| {
+            connection.execute(
+                "UPDATE inbox_sources
+                 SET enabled = ?2,
+                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE id = ?1",
+                params![id, enabled],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// 清游标用于「重新添加同一账户」与 UIDVALIDITY 变化后的全量重扫。
+    pub fn clear_cursor(&self, id: &str) -> DbResult<()> {
+        self.database.with_connection(|connection| {
+            connection.execute(
+                "UPDATE inbox_sources
+                 SET cursor = NULL,
+                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE id = ?1",
+                [id],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// 上限校验只数启用中的邮箱账户：软停用的账户不占名额。
+    pub fn count_configured_email(&self) -> DbResult<i64> {
+        self.database.with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM inbox_sources WHERE kind = ?1 AND enabled = 1",
+                    [InboxSourceKind::Email.as_str()],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
         })
     }
 

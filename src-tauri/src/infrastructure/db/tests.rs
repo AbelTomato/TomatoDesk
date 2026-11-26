@@ -1,10 +1,11 @@
 use super::{Database, MANUAL_SOURCE_ID};
 use crate::domain::{
-    CaptureKind, CapturePageQuery, CaptureSort, CaptureSummary, GithubRelease, GithubThread,
-    GithubThreadComment, InboxSourceKind, KeysetCursor, NewCapture, NewInboxMessage, NewSyncRun,
-    NewTask, ReadBackErrorKind, SyncRunStatus, TaskPageQuery, TaskStatus, ThreadKind, ThreadQuery,
-    ThreadRelationship, ThreadState, ThreadSummary, TriageOutcome,
+    CaptureKind, CapturePageQuery, CaptureSort, CaptureSummary, EmailTls, GithubRelease,
+    GithubThread, GithubThreadComment, InboxSourceKind, KeysetCursor, NewCapture, NewInboxMessage,
+    NewSyncRun, NewTask, ReadBackErrorKind, SyncRunStatus, TaskPageQuery, TaskStatus, ThreadKind,
+    ThreadQuery, ThreadRelationship, ThreadState, ThreadSummary, TriageOutcome,
 };
+use crate::infrastructure::email::{EmailConfig, account_id};
 use uuid::Uuid;
 
 fn capture(title: &str, body: &str) -> NewCapture {
@@ -1170,4 +1171,98 @@ fn read_back_queue_retries_then_blocks_and_follows_token_changes() {
     let status = queue.status().unwrap();
     assert_eq!((status.pending, status.blocked), (0, 0));
     assert_eq!(status.last_error, None);
+}
+
+#[test]
+fn email_accounts_round_trip_config_and_survive_soft_delete() {
+    let db = Database::in_memory().unwrap();
+    let sources = db.inbox_sources();
+    let id = account_id("me@qq.com", "imap.qq.com");
+    let config = EmailConfig::new("me@qq.com", ("imap.qq.com", 993, EmailTls::Implicit), None);
+
+    let created = sources
+        .upsert_email(&id, "me@qq.com", &config.to_json())
+        .unwrap();
+    assert_eq!(created.kind, InboxSourceKind::Email);
+    assert!(created.enabled);
+    assert_eq!(sources.count_configured_email().unwrap(), 1);
+
+    // 幂等：同一 id 再保存只更新配置，不新增行，created_at 不变。
+    let updated = EmailConfig::new(
+        "me@qq.com",
+        ("imap.qq.com", 143, EmailTls::Starttls),
+        Some("Archive"),
+    );
+    let again = sources
+        .upsert_email(&id, "me@qq.com", &updated.to_json())
+        .unwrap();
+    assert_eq!(again.created_at, created.created_at);
+    let rows = sources.list_email().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(EmailConfig::parse(&rows[0].config_json).unwrap(), updated);
+    assert_eq!(
+        sources.config(&id).unwrap().as_deref(),
+        Some(updated.to_json().as_str())
+    );
+
+    // 游标：写入后能读回，显式清空与「重新保存配置」都会归零。
+    sources
+        .mark_synced(
+            &id,
+            Some(r#"{"uidValidity":1,"lastUid":42}"#),
+            "2026-11-26T12:00:00Z",
+        )
+        .unwrap();
+    assert!(sources.cursor(&id).unwrap().is_some());
+    sources.clear_cursor(&id).unwrap();
+    assert_eq!(sources.cursor(&id).unwrap(), None);
+
+    sources
+        .mark_synced(
+            &id,
+            Some(r#"{"uidValidity":1,"lastUid":42}"#),
+            "2026-11-26T12:00:00Z",
+        )
+        .unwrap();
+    sources
+        .upsert_email(&id, "me@qq.com", &updated.to_json())
+        .unwrap();
+    assert_eq!(sources.cursor(&id).unwrap(), None);
+
+    // 软停用：不占名额，但来源行与历史消息都保留。
+    let message = db
+        .inbox_messages()
+        .ingest(NewInboxMessage {
+            source_id: id.clone(),
+            ..inbox_message("mail-1", "一封邮件", "2026-11-26T10:00:00Z")
+        })
+        .unwrap();
+    sources.set_enabled(&id, false).unwrap();
+    assert_eq!(sources.count_configured_email().unwrap(), 0);
+    assert!(db.inbox_messages().get(&message.id).unwrap().is_some());
+    assert!(!sources.list_email().unwrap()[0].source.enabled);
+
+    // 重新保存同一账户等于重新启用：回到 enabled=1 且游标为空。
+    let reenabled = sources
+        .upsert_email(&id, "me@qq.com", &updated.to_json())
+        .unwrap();
+    assert!(reenabled.enabled);
+    assert_eq!(sources.count_configured_email().unwrap(), 1);
+
+    // 多账户：不同主机派生出不同来源，互不覆盖。
+    let other = account_id("me@163.com", "imap.163.com");
+    let other_config = EmailConfig::new(
+        "me@163.com",
+        ("imap.163.com", 993, EmailTls::Implicit),
+        None,
+    );
+    sources
+        .upsert_email(&other, "me@163.com", &other_config.to_json())
+        .unwrap();
+    assert_eq!(sources.count_configured_email().unwrap(), 2);
+    assert_eq!(sources.list_email().unwrap().len(), 2);
+    assert_eq!(
+        EmailConfig::parse(&sources.config(&other).unwrap().unwrap()),
+        Some(other_config)
+    );
 }

@@ -15,7 +15,7 @@ pub use github_repo::GithubRepoRepository;
 pub use github_thread::GithubThreadRepository;
 pub use inbox_message::InboxMessageRepository;
 pub use inbox_read_back::InboxReadBackRepository;
-pub use inbox_source::{GITHUB_SOURCE_ID, InboxSourceRepository, MANUAL_SOURCE_ID};
+pub use inbox_source::{EmailSourceRow, GITHUB_SOURCE_ID, InboxSourceRepository, MANUAL_SOURCE_ID};
 pub use sync_run::SyncRunRepository;
 pub use tag::TagRepository;
 pub use task::TaskRepository;

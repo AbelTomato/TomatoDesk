@@ -55,6 +55,68 @@ pub struct InboxSource {
     pub updated_at: String,
 }
 
+/// 邮箱连接加密方式：`implicit` 是 993 直连 TLS，`starttls` 是 143 先明文再升级。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EmailTls {
+    #[default]
+    Implicit,
+    Starttls,
+}
+
+impl EmailTls {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Implicit => "implicit",
+            Self::Starttls => "starttls",
+        }
+    }
+
+    /// 用户没填端口时按加密方式给默认值，避免 993/143 配错。
+    pub fn default_port(self) -> u16 {
+        match self {
+            Self::Implicit => 993,
+            Self::Starttls => 143,
+        }
+    }
+}
+
+impl FromStr for EmailTls {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "implicit" => Ok(Self::Implicit),
+            "starttls" => Ok(Self::Starttls),
+            _ => Err(format!("unknown email tls mode: {value}")),
+        }
+    }
+}
+
+/// 设置页展示的账户状态：**不含密码**，凭据只在 Windows 凭据管理器里。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmailAccountStatus {
+    pub id: String,
+    pub address: String,
+    pub host: String,
+    pub port: u16,
+    pub tls: EmailTls,
+    pub mailbox: String,
+    pub enabled: bool,
+    pub last_synced_at: Option<String>,
+    pub last_error: Option<String>,
+}
+
+/// 「测试连接」的结果：只回读到的邮箱概况，不回任何凭据。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmailAccountProbe {
+    /// `EXAMINE` 返回的 EXISTS，即当前邮件总数。
+    pub mailbox_total: u32,
+    pub uid_validity: u32,
+}
+
 /// 判断结果。`capture` 预留给后续的「提取为随手记」，MVP 只写入前两种。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
