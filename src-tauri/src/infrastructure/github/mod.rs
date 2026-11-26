@@ -10,6 +10,8 @@ const PER_PAGE: &str = "100";
 pub enum GithubError {
     InvalidRepository(String),
     Request(String),
+    /// 5xx 与 408：GitHub 侧或链路暂时不可用，重试有意义，和参数类 4xx 区分开。
+    Unavailable(String),
     RateLimited(Option<String>),
     Unauthorized,
     MissingNotificationsScope,
@@ -22,6 +24,9 @@ impl std::fmt::Display for GithubError {
         match self {
             Self::InvalidRepository(message) => write!(formatter, "{message}"),
             Self::Request(message) => write!(formatter, "GitHub 网络请求失败：{message}"),
+            Self::Unavailable(message) => {
+                write!(formatter, "GitHub 服务暂时不可用：{message}")
+            }
             Self::RateLimited(reset) => match reset {
                 Some(reset) => {
                     if let Ok(value) = reset.parse::<i64>() {
@@ -371,7 +376,7 @@ impl GithubClient {
             .map_err(|error| GithubError::Request(error.to_string()))?;
         if !response.status().is_success() {
             let status = response.status();
-            return Err(notification_error(status, response).await);
+            return Err(read_back_error(status, response).await);
         }
         Ok(())
     }
@@ -493,6 +498,16 @@ async fn notification_error(status: StatusCode, response: Response) -> GithubErr
     response_error(response).await
 }
 
+/// 已读回写的错误映射：404 视为线程已不存在，队列据此删行而不是一直重试。
+/// GitHub 对缺少 `notifications` 权限的 Token 也回 404；那种情况由同步轮询
+/// 在消息源上报告权限错误，这里按「线程不存在」处理，避免旧线程永久卡在队列里。
+async fn read_back_error(status: StatusCode, response: Response) -> GithubError {
+    if status == StatusCode::NOT_FOUND {
+        return GithubError::NotFound;
+    }
+    notification_error(status, response).await
+}
+
 /// 把非 2xx 响应翻译成可读错误，限流与鉴权分开提示。
 async fn response_error(response: Response) -> GithubError {
     let status = response.status();
@@ -527,6 +542,10 @@ async fn response_error(response: Response) -> GithubError {
         );
     }
     let body = response.text().await.unwrap_or_default();
+    // 5xx 与 408 归为「暂时不可用」：调用方据此判断是重试还是放弃。
+    if status.is_server_error() || status == StatusCode::REQUEST_TIMEOUT {
+        return GithubError::Unavailable(format!("HTTP {status}: {body}"));
+    }
     GithubError::Api(format!("HTTP {status}: {body}"))
 }
 

@@ -69,12 +69,13 @@ pub fn run() {
             commands::count_inbox_pending,
             commands::list_inbox_sources,
             commands::get_inbox_message,
-            commands::sync_inbox_github,
             commands::mark_inbox_message_read,
             commands::mark_inbox_message_unread,
             commands::dismiss_inbox_message,
             commands::convert_inbox_message_to_task,
             commands::ingest_inbox_message,
+            commands::get_inbox_read_back_status,
+            commands::retry_inbox_read_back,
             commands::export_captures_json,
             commands::export_captures_markdown
         ])
@@ -82,7 +83,9 @@ pub fn run() {
             let database_path = app.path().app_data_dir()?.join("tomatodesk.sqlite3");
             let database = infrastructure::db::Database::open(database_path)?;
             app.manage(database.clone());
-            application::github::start_scheduler(database, app.handle().clone());
+            application::github::start_scheduler(database.clone(), app.handle().clone());
+            application::inbox::github::start_poller(database.clone(), app.handle().clone());
+            application::inbox::github::start_read_back_worker(database, app.handle().clone());
             platform::setup(app)
         })
         .run(tauri::generate_context!())

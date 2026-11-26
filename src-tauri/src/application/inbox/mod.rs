@@ -15,12 +15,22 @@ pub(crate) fn ingest(database: &Database, message: NewInboxMessage) -> DbResult<
     database.inbox_messages().ingest(message)
 }
 
+/// 改已读状态。本地写入是唯一的事实来源，远端同步交给回写队列：
+/// 标已读入队，改回未读则撤销还没写出去的意图。
 pub(crate) fn mark_read(
     database: &Database,
     id: &str,
     read: bool,
 ) -> DbResult<Option<InboxMessage>> {
-    database.inbox_messages().set_read(id, read)
+    let message = database.inbox_messages().set_read(id, read)?;
+    if let Some(message) = &message {
+        if read {
+            github::enqueue_read_back(database, message)?;
+        } else {
+            github::cancel_read_back(database, &message.id)?;
+        }
+    }
+    Ok(message)
 }
 
 /// 忽略：软删除，重复点击幂等。

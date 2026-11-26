@@ -108,7 +108,7 @@ function AppShell() {
     let disposed = false;
     const currentWindow = getCurrentWindow();
     const stops: Array<() => void> = [];
-    for (const event of ["github-sync-updated", "quick-capture-completed"]) {
+    for (const event of ["github-sync-updated", "inbox-sync-updated", "quick-capture-completed"]) {
       void currentWindow
         .listen(event, () => {
           if (!disposed) void refreshCounts();

@@ -18,8 +18,9 @@ pub use github::{
     readme_summary,
 };
 pub use inbox::{
-    InboxCounts, InboxMessage, InboxMessageCursor, InboxPage, InboxPageQuery, InboxSource,
-    InboxSourceKind, NewInboxMessage, TriageOutcome,
+    InboxCounts, InboxMessage, InboxMessageCursor, InboxPage, InboxPageQuery, InboxReadBack,
+    InboxReadBackStatus, InboxSource, InboxSourceKind, NewInboxMessage, ReadBackErrorKind,
+    ReadBackStatus, TriageOutcome,
 };
 pub use sync_run::{NewSyncRun, SyncRun, SyncRunStatus};
 pub use tag::Tag;

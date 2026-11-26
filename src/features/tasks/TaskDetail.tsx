@@ -78,11 +78,8 @@ function TaskDetail({
     };
   }, [originId, originKind]);
 
-  const originLabel = task
-    ? origin?.source?.kind === "github"
-      ? "来自 GitHub 通知"
-      : describeOrigin(task)
-    : "";
+  // 来源文案跟着待办一起返回，不再等消息加载完才敢显示。
+  const originLabel = task ? describeOrigin(task) : "";
 
   function startEditing() {
     if (!task) return;

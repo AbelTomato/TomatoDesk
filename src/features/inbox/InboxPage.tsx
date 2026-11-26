@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { isTauri } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import {
   Badge,
@@ -14,6 +16,7 @@ import {
   convertInboxMessageToTask,
   dismissInboxMessage,
   getGithubTokenStatus,
+  getInboxReadBackStatus,
   getThread,
   ingestInboxMessage,
   listInboxMessagesPage,
@@ -21,10 +24,11 @@ import {
   markInboxMessageRead,
   markInboxMessageUnread,
   previewMode,
-  syncInboxGithub,
   type InboxCounts,
   type InboxMessage,
+  type InboxReadBackStatus,
   type InboxSource,
+  type InboxSyncSummary,
 } from "../../lib/api";
 import { notifyInboxChanged, notifyTasksChanged } from "../../lib/events";
 import { formatRelative } from "../../lib/format";
@@ -44,7 +48,10 @@ const emptyHints: Record<TriagedFilter, { title: string; hint: string }> = {
     hint: "新的通知会在同步后出现在这里，读完可以先放着，判断留到你决定要做什么的时候。",
   },
   triaged: { title: "还没有判断过的消息", hint: "忽略或转为待办之后，消息会留在这里备查。" },
-  all: { title: "收件箱是空的", hint: "配置 GitHub Token 后可以同步通知；邮件连接器随后提供。" },
+  all: {
+    title: "收件箱是空的",
+    hint: "配置 GitHub Token 后通知会自动同步进来；邮件连接器随后提供。",
+  },
 };
 
 /** 开发窗口用来造消息的样例：点一次写一条，循环使用。 */
@@ -98,8 +105,8 @@ function InboxPage({
   const [notice, setNotice] = useState<string | null>(null);
   const [mutating, setMutating] = useState(false);
   const [ingesting, setIngesting] = useState(false);
-  const [syncing, setSyncing] = useState(false);
   const [tokenConfigured, setTokenConfigured] = useState(false);
+  const [readBack, setReadBack] = useState<InboxReadBackStatus | null>(null);
   const requestId = useRef(0);
   const sampleIndex = useRef(0);
   const appliedInitial = useRef(false);
@@ -161,12 +168,57 @@ function InboxPage({
     void loadSources();
   }, [loadSources]);
 
-  // 没有 Token 时不暴露同步按钮，避免点下去必然失败。
+  // 已读回写失败不阻塞本地已读，但要在消息源栏提示一句，避免「已读」悄悄没同步出去。
+  const loadReadBack = useCallback(async () => {
+    try {
+      setReadBack(await getInboxReadBackStatus());
+    } catch {
+      setReadBack(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadReadBack();
+  }, [loadReadBack]);
+
+  // 没有 Token 时只提示去配置，不暴露必然失败的同步入口。
   useEffect(() => {
     void getGithubTokenStatus()
       .then((status) => setTokenConfigured(status.configured))
       .catch(() => setTokenConfigured(false));
   }, []);
+
+  /**
+   * 通知由后台每五分钟轮询一次，同步完成后发事件过来。
+   * 这里静默重载：用户正在读的那条如果还在列表里，选中项不会跳走。
+   */
+  useEffect(() => {
+    if (!isTauri()) return;
+    let disposed = false;
+    const stops: Array<() => void> = [];
+    void getCurrentWindow()
+      .listen<InboxSyncSummary | null>("inbox-sync-updated", () => {
+        if (disposed) return;
+        void load();
+        void loadSources();
+      })
+      .then((stop) => {
+        if (disposed) stop();
+        else stops.push(stop);
+      });
+    void getCurrentWindow()
+      .listen("inbox-read-back-updated", () => {
+        if (!disposed) void loadReadBack();
+      })
+      .then((stop) => {
+        if (disposed) stop();
+        else stops.push(stop);
+      });
+    return () => {
+      disposed = true;
+      stops.forEach((stop) => stop());
+    };
+  }, [load, loadReadBack, loadSources]);
 
   const loadMore = useCallback(async () => {
     if (!hasMore || loadingMore || loading || !cursor) return;
@@ -243,6 +295,7 @@ function InboxPage({
   const selectedSource = selectedMessage
     ? (sources.find((source) => source.id === selectedMessage.sourceId) ?? null)
     : null;
+  const githubSource = sources.find((source) => source.kind === "github") ?? null;
 
   /**
    * 点开未读消息即视为读过；失败不打断阅读。
@@ -341,28 +394,6 @@ function InboxPage({
     }
   }
 
-  async function syncGitHub() {
-    if (syncing || mutating) return;
-    setSyncing(true);
-    setError(null);
-    setNotice(null);
-    try {
-      const summary = await syncInboxGithub();
-      // load 会清掉旧提示，所以先刷新再写结果。
-      await Promise.all([load(), loadSources()]);
-      setNotice(
-        summary.fetchedCount === 0
-          ? "没有新的 GitHub 通知。"
-          : `同步完成：拉到 ${summary.fetchedCount} 条通知，待判断 ${summary.pendingCount} 条。`,
-      );
-      notifyInboxChanged();
-    } catch (syncError) {
-      setError(syncError instanceof Error ? syncError.message : "同步 GitHub 通知失败，请重试。");
-    } finally {
-      setSyncing(false);
-    }
-  }
-
   async function ingestSample() {
     const sample = devSamples[sampleIndex.current % devSamples.length];
     sampleIndex.current += 1;
@@ -410,6 +441,11 @@ function InboxPage({
             <span className="font-mono text-xs text-muted-foreground">
               待判断 {counts.pending} · 未读 {counts.unread}
             </span>
+            {githubSource?.lastSyncedAt ? (
+              <span className="font-mono text-xs text-muted-foreground">
+                自动同步 · {formatRelative(githubSource.lastSyncedAt)}
+              </span>
+            ) : null}
           </div>
           <div className="flex items-center gap-2">
             {import.meta.env.DEV && !previewMode ? (
@@ -425,16 +461,6 @@ function InboxPage({
             <Button variant="ghost" size="sm" onClick={() => void load()}>
               刷新
             </Button>
-            {tokenConfigured ? (
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={syncing}
-                onClick={() => void syncGitHub()}
-              >
-                {syncing ? "同步中…" : "同步 GitHub"}
-              </Button>
-            ) : null}
           </div>
         </div>
 
@@ -543,8 +569,20 @@ function InboxPage({
             </Row>
           ))}
           <p className="mt-4 px-3 text-xs leading-5 text-muted-foreground">
-            消息源只读展示，同步与新增来源在接入连接器后提供。
+            {tokenConfigured
+              ? "GitHub 通知每五分钟自动同步一次，不用手动拉取。"
+              : "配置 GitHub Token 后，通知会自动同步进来。"}
           </p>
+          {githubSource?.lastError ? (
+            <p className="mt-2 px-3 text-xs leading-5 text-destructive">
+              上次同步失败：{githubSource.lastError}
+            </p>
+          ) : null}
+          {readBack && readBack.blocked > 0 ? (
+            <p className="mt-2 px-3 text-xs leading-5 text-warning">
+              {readBack.blocked} 条已读没能同步给 GitHub，到设置页确认权限后可重试。
+            </p>
+          ) : null}
         </aside>
 
         <section

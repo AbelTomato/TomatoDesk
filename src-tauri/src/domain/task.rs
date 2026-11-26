@@ -49,6 +49,9 @@ pub struct Task {
     pub origin_kind: Option<String>,
     /// 来源侧的 id，弱关联，不建外键。
     pub origin_id: Option<String>,
+    /// 来源消息所属的消息源类型（`github` / `manual` …）；非收件箱来源为空。
+    /// 列表行用它把「来自收件箱」细化为「来自 GitHub 通知」，不必再查一次消息。
+    pub origin_source_kind: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     /// 完成时间；取消或重开后回到 `None`。

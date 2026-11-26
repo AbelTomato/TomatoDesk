@@ -150,6 +150,8 @@ export interface Task {
   /** `manual` / `inbox` / `capture`；手动创建为 `manual`。 */
   originKind: string | null;
   originId: string | null;
+  /** 来源消息的消息源类型；列表行据此把「来自收件箱」写细，非收件箱来源为空。 */
+  originSourceKind: InboxSourceKind | null;
   createdAt: string;
   updatedAt: string;
   /** 完成时间；取消或重开会清空。 */
@@ -246,7 +248,7 @@ export interface InboxCounts {
   unread: number;
 }
 
-/** 一次 GitHub 通知同步的结果；`pendingCount` 直接用于刷新角标。 */
+/** 后台轮询一轮的结果，作为 `inbox-sync-updated` 事件的载荷；失败时为 `null`。 */
 export interface InboxSyncSummary {
   sourceId: string;
   fetchedCount: number;
@@ -621,10 +623,25 @@ export async function getInboxMessage(id: string): Promise<InboxMessage> {
   return mocked ?? call("get_inbox_message", { input: { id } });
 }
 
-/** 拉取 GitHub 通知；重复同步只更新同一条消息。 */
-export async function syncInboxGithub(): Promise<InboxSyncSummary> {
-  const mocked = await preview((data) => data.syncInboxGithub());
-  return mocked ?? call("sync_inbox_github");
+/**
+ * 已读回写队列：`pending` 是还没写出去的意图（失败后按指数退避重试），
+ * `blocked` 需要重新授权或手动重试。
+ */
+export interface InboxReadBackStatus {
+  pending: number;
+  blocked: number;
+  lastError: string | null;
+}
+
+export async function getInboxReadBackStatus(): Promise<InboxReadBackStatus> {
+  const mocked = await preview((data) => data.readBackStatus);
+  return mocked ?? call("get_inbox_read_back_status");
+}
+
+/** 把 blocked 的记录放回队列，返回新的队列概览。 */
+export async function retryInboxReadBack(): Promise<InboxReadBackStatus> {
+  const mocked = await preview((data) => data.readBackStatus);
+  return mocked ?? call("retry_inbox_read_back");
 }
 
 export async function markInboxMessageRead(id: string): Promise<InboxMessage> {

@@ -766,6 +766,11 @@ fn inbox_commands_ingest_triage_and_convert_exactly_once() {
     assert_eq!(task.origin_kind.as_deref(), Some("inbox"));
     assert_eq!(task.origin_id.as_deref(), Some(ids[1].as_str()));
     assert_eq!(
+        task.origin_source_kind.as_deref(),
+        Some("manual"),
+        "the task carries the source kind so the list can name it without a lookup"
+    );
+    assert_eq!(
         task.note.as_deref(),
         Some("摘要\n\nhttps://example.com/notice-1"),
         "the task note carries the summary and the source link"
@@ -867,4 +872,67 @@ fn get_inbox_message_returns_the_row_and_reports_missing_ids() {
     // 空 id 在校验层就被拒绝，不会落到 SQL。
     let error = inbox::get_inbox_message_in(&database, IdInput { id: "  ".into() }).unwrap_err();
     assert_eq!(error.code, CommandErrorCode::Validation);
+}
+
+#[test]
+fn marking_a_notification_read_enqueues_the_write_back_and_unread_cancels_it() {
+    let database = Database::in_memory().unwrap();
+    let source = database.inbox_sources().ensure_github().unwrap();
+    let message = database
+        .inbox_messages()
+        .ingest(crate::domain::NewInboxMessage {
+            source_id: source.id.clone(),
+            external_id: "4242".into(),
+            external_updated_at: Some("2026-11-26T09:00:00Z".into()),
+            category: "mention".into(),
+            title: "评审请求".into(),
+            summary: Some("TencentCloud/Octop · 请求你评审".into()),
+            body: None,
+            url: Some("https://github.com/TencentCloud/Octop/pull/482".into()),
+            actor: None,
+            occurred_at: Some("2026-11-26T09:00:00Z".into()),
+            related_kind: None,
+            related_id: None,
+            payload_json: None,
+        })
+        .unwrap();
+
+    let read = inbox::mark_inbox_message_read_in(
+        &database,
+        IdInput {
+            id: message.id.clone(),
+        },
+    )
+    .unwrap();
+    assert!(read.read_at.is_some(), "the local read state is written");
+    assert_eq!(
+        inbox::get_inbox_read_back_status_in(&database)
+            .unwrap()
+            .pending,
+        1,
+        "a github notification is queued for the remote write"
+    );
+
+    // 改回未读会撤销还没写出去的意图，避免远端被标已读、本地却显示未读。
+    inbox::mark_inbox_message_unread_in(
+        &database,
+        IdInput {
+            id: message.id.clone(),
+        },
+    )
+    .unwrap();
+    let status = inbox::get_inbox_read_back_status_in(&database).unwrap();
+    assert_eq!((status.pending, status.blocked), (0, 0));
+
+    // 人工来源没有远端可写，不入队。
+    let manual =
+        inbox::ingest_inbox_message_in(&database, inbox_input("manual-1", "mention", "手动", 1))
+            .unwrap();
+    inbox::mark_inbox_message_read_in(&database, IdInput { id: manual.id }).unwrap();
+    assert_eq!(
+        inbox::get_inbox_read_back_status_in(&database)
+            .unwrap()
+            .pending,
+        0
+    );
 }

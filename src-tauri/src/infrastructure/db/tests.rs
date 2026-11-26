@@ -2,8 +2,8 @@ use super::{Database, MANUAL_SOURCE_ID};
 use crate::domain::{
     CaptureKind, CapturePageQuery, CaptureSort, CaptureSummary, GithubRelease, GithubThread,
     GithubThreadComment, InboxSourceKind, KeysetCursor, NewCapture, NewInboxMessage, NewSyncRun,
-    NewTask, SyncRunStatus, TaskPageQuery, TaskStatus, ThreadKind, ThreadQuery, ThreadRelationship,
-    ThreadState, ThreadSummary, TriageOutcome,
+    NewTask, ReadBackErrorKind, SyncRunStatus, TaskPageQuery, TaskStatus, ThreadKind, ThreadQuery,
+    ThreadRelationship, ThreadState, ThreadSummary, TriageOutcome,
 };
 use uuid::Uuid;
 
@@ -78,7 +78,7 @@ fn migrations_are_idempotent_and_captures_support_crud() {
             )
         })
         .unwrap();
-    assert_eq!(migration_count, 7);
+    assert_eq!(migration_count, 8);
     let captures = db.captures();
     let created = captures
         .create(capture("First title", "first body"))
@@ -955,7 +955,7 @@ fn opening_a_v5_database_applies_the_task_and_inbox_migrations() {
     let database = Database::open(&database_path).unwrap();
     assert_eq!(
         database.migrated_to(),
-        Some(7),
+        Some(8),
         "opening a v5 database lands on the latest version"
     );
     assert_eq!(database.tasks().counts().unwrap().all, 0);
@@ -1049,4 +1049,125 @@ fn github_inbox_source_tracks_cursor_and_lookup_helpers_find_local_rows() {
         .expect("synced thread is found by number");
     assert_eq!(db.github_threads().find_id(&repo.id, 999).unwrap(), None);
     assert!(db.github_threads().get(&thread_id).unwrap().is_some());
+}
+
+#[test]
+fn task_projection_resolves_the_inbox_source_kind_without_a_second_query() {
+    let db = Database::in_memory().unwrap();
+    let github = db.inbox_sources().ensure_github().unwrap();
+    let message = db
+        .inbox_messages()
+        .ingest(NewInboxMessage {
+            source_id: github.id.clone(),
+            ..inbox_message(
+                "notice-projection",
+                "来自通知的待办",
+                "2026-11-26T10:00:00Z",
+            )
+        })
+        .unwrap();
+
+    let tasks = db.tasks();
+    let from_inbox = tasks
+        .create(new_task("来自通知的待办", Some("inbox"), Some(&message.id)))
+        .unwrap();
+    assert_eq!(from_inbox.origin_source_kind.as_deref(), Some("github"));
+
+    let manual = tasks
+        .create(new_task("手动建的", Some("manual"), None))
+        .unwrap();
+    assert_eq!(
+        manual.origin_source_kind, None,
+        "a manual task has no inbox source to resolve"
+    );
+
+    // 列表投影与详情投影共用 TASK_FIELDS，这里确认分页查询也带上来源类型。
+    let page = tasks
+        .page(&TaskPageQuery {
+            status: None,
+            cursor: None,
+            limit: 10,
+        })
+        .unwrap();
+    let listed = page
+        .tasks
+        .iter()
+        .find(|task| task.id == from_inbox.id)
+        .expect("the converted task is in the page");
+    assert_eq!(listed.origin_source_kind.as_deref(), Some("github"));
+}
+
+#[test]
+fn read_back_queue_retries_then_blocks_and_follows_token_changes() {
+    let db = Database::in_memory().unwrap();
+    let source = db.inbox_sources().ensure_github().unwrap();
+    let messages = db.inbox_messages();
+    let message = messages
+        .ingest(NewInboxMessage {
+            source_id: source.id.clone(),
+            ..inbox_message("9001", "通知", "2026-11-26T10:00:00Z")
+        })
+        .unwrap();
+
+    let queue = db.inbox_read_back();
+    queue.enqueue(&message.id, &source.id, "9001").unwrap();
+    queue.enqueue(&message.id, &source.id, "9001").unwrap();
+    let due = queue.due("2999-01-01T00:00:00Z", 10).unwrap();
+    assert_eq!(due.len(), 1, "repeated reads reuse the same queue row");
+    assert_eq!(due[0].attempts, 0);
+    assert!(
+        queue.due("2000-01-01T00:00:00Z", 10).unwrap().is_empty(),
+        "rows scheduled in the future are not due yet"
+    );
+
+    queue
+        .mark_retry(
+            &due[0].id,
+            1,
+            "2026-11-26T10:05:00Z",
+            "网络超时",
+            ReadBackErrorKind::Transient,
+        )
+        .unwrap();
+    assert!(queue.due("2026-11-26T10:00:00Z", 10).unwrap().is_empty());
+    let due = queue.due("2026-11-26T10:06:00Z", 10).unwrap();
+    assert_eq!(due[0].attempts, 1);
+    assert_eq!(due[0].last_error.as_deref(), Some("网络超时"));
+    assert_eq!(due[0].last_error_kind, Some(ReadBackErrorKind::Transient));
+
+    // 认证失败转 blocked，不再自动到期。
+    queue
+        .mark_blocked(&due[0].id, 2, "Token 无效", ReadBackErrorKind::Auth)
+        .unwrap();
+    let status = queue.status().unwrap();
+    assert_eq!((status.pending, status.blocked), (0, 1));
+    assert_eq!(status.last_error.as_deref(), Some("Token 无效"));
+
+    // 重新保存 Token：blocked 回到 pending 并把退避归零。
+    assert_eq!(queue.reset_blocked().unwrap(), 1);
+    let status = queue.status().unwrap();
+    assert_eq!((status.pending, status.blocked), (1, 0));
+    assert_eq!(status.last_error, None);
+
+    // 同步把消息重新变成未读时，旧的已读意图作废。
+    messages.set_read(&message.id, false).unwrap();
+    assert_eq!(queue.remove_unread().unwrap(), 1);
+    assert_eq!(queue.status().unwrap().pending, 0);
+
+    // 删除 Token 丢弃 pending，保留 blocked 供「重新授权」提示。
+    queue.enqueue(&message.id, &source.id, "9001").unwrap();
+    assert_eq!(queue.clear_pending().unwrap(), 1);
+    queue.enqueue(&message.id, &source.id, "9001").unwrap();
+    let id = queue.due("2999-01-01T00:00:00Z", 10).unwrap()[0].id.clone();
+    queue
+        .mark_blocked(&id, 3, "缺少 notifications 权限", ReadBackErrorKind::Auth)
+        .unwrap();
+    assert_eq!(queue.clear_pending().unwrap(), 0);
+    assert_eq!(queue.status().unwrap().blocked, 1);
+
+    // 写入成功后删行，队列回到空。
+    queue.remove(&id).unwrap();
+    let status = queue.status().unwrap();
+    assert_eq!((status.pending, status.blocked), (0, 0));
+    assert_eq!(status.last_error, None);
 }

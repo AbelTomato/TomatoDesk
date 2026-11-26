@@ -705,6 +705,7 @@ pub struct MigrationNotice {
 - 命中本地线程时跳详情，否则打开 GitHub。
 - 转为待办后，待办能显示「来自 GitHub 通知」并跳回原消息。
 - Token 缺少 `notifications` scope 时有明确错误提示。
+- 已读回写失败不再静默：瞬时失败自动退避重试，认证问题停下来并在设置页可见、可手动重试。
 
 落地记录（2026-11-26）：
 
@@ -712,16 +713,19 @@ pub struct MigrationNotice {
 - 入库：`application/inbox/github.rs` 负责通知 → `NewInboxMessage` 的映射与同步；`external_id` 取通知 id，`external_updated_at` 取 `updated_at`，`title` 取 `subject.title`，`summary` 固定为「仓库 · 原因」，`body` 留空（正文仍回仓库模块），`payload_json` 保存原始通知。`reason` 收敛为 `mention / review_requested / assigned / ci_failed / release / comment / notification`。
 - 去重与增量：沿用 `(source_id, external_id)` upsert，重复同步不产生新消息；`inbox_sources.cursor` 记录上次成功同步时间，下次 `since` 往前留 5 分钟重叠，秒级边界不会漏消息，重叠部分由唯一键消掉。已判断的消息不恢复未读、判断结果不被覆盖；未判断的消息更新后重新变为未读。
 - 线程关联：`PullRequest` / `Issue` 用 `repository.full_name` 找本地仓库、再用编号找本地线程，命中时写 `related_kind = github_thread`、`related_id = 本地线程 id`；未关注或未同步时只存外部链接。`CheckSuite` 落到仓库的 Actions 页，`Release` 落到 Release 列表（API 给的 id 不是 tag），其余类型把 api.github.com 换成 github.com。
-- 已读回写：本地标记已读后异步 `PATCH` 通知线程；回写失败不回滚本地已读，也不阻塞界面（远端只是辅助状态）。
+- 已读回写：本地标记已读只写本地并入队（`0008_inbox_read_back.sql`），由 `start_read_back_worker` 一分钟一轮处理，点已读不再等网络。瞬时失败（网络错误、5xx、408）按 1 / 2 / 4 / 8 / 16 / 30 分钟指数退避，带 ±20% 抖动，连续 6 次后转 `blocked`；`401` / 缺少 `notifications` 权限直接 `blocked` 等重新授权，不再重试；`404`（线程已删除）与其余 4xx 直接删行。限流优先按 `x-ratelimit-reset` / `retry-after` 安排下一次。重新保存 Token 会把 `blocked` 放回队列，删除 Token 清掉 `pending`（保留 `blocked` 继续提示需授权）；本地改回未读、或同步把消息重新变成未读时，对应队列行一并删除。
+- 回写可见性：设置页新增「已读回写」区，展示待回写 / 需要重新授权条数与最近一次错误，`blocked > 0` 时提供「重试」；收件箱消息源栏在有 `blocked` 时提示去设置页确认权限；队列变化广播 `inbox-read-back-updated`，两处都会重载。
 - 来源状态：`ensure_github()` 固定复用 `source-github`；同步成功写 `last_synced_at` / `cursor` 并清 `last_error`，失败只记录 `last_error`，游标保持在上次成功的位置。
-- 前端：收件箱头部在配置 Token 后出现「同步 GitHub」（未配置时不显示，避免必然失败的按钮）；详情新增「相关」区，「在本地查看线程」在命中本地线程时出现，失败退回 GitHub 链接；待办详情加载 `origin_id` 对应消息，来源显示「来自 GitHub 通知」并提供「查看原消息」，跳回收件箱时用 `?view=inbox&message=<id>` 同款定位逻辑选中该条。
+- 轮询：`application/inbox/github.rs::start_poller` 在 `setup` 里启动，五分钟一轮，第一次 tick 立即执行，所以打开应用就补一次；没有 Token 时整轮跳过，不发请求也不广播。同步结束广播 `inbox-sync-updated`（成功带 `InboxSyncSummary`，失败为 `null`），前端据此静默重载列表、消息源与角标。`sync_inbox_github` 命令与界面上的「同步 GitHub」按钮一并删除，拉取只由后台负责。
+- 前端：收件箱不再有手动同步入口，头部显示「自动同步 · {上次同步时间}」，消息源栏在同步失败时直接展示 `last_error`；详情新增「相关」区，「在本地查看线程」在命中本地线程时出现，失败退回 GitHub 链接；待办详情加载 `origin_id` 对应消息，提供「查看原消息」，跳回收件箱时用 `?view=inbox&message=<id>` 同款定位逻辑选中该条。
+- 待办来源：`tasks` 投影补一列 `origin_source_kind`，用相关子查询从来源消息带回消息源类型（命中主键，不额外发查询）；列表行与详情统一由 `describeOrigin()` 输出「来自 GitHub 通知 / 来自邮件 / 来自收件箱」，不必逐行查消息。
 - 偏差与未做：
   - 只同步未读通知，GitHub 上已读、本地从未见过的通知不会补进来；这样避免把历史已读事件倒进收件箱。
-  - 没有加定时调度与 `sync_runs` 记录，同步由收件箱按钮手动触发；调度沿用阶段四之后的独立任务。
-  - 通知接口不返回触发人，`actor` 为空；列表行来源仍显示「来自收件箱」，精确来源（GitHub 通知）在待办详情展示。
-  - 已读回写失败静默忽略，界面不区分「本地已读」与「远端已回写」。
-- 门禁：`cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test --locked`（43/43）；`pnpm exec tsc --noEmit`、`pnpm lint`、`pnpm test`（6/6）、`pnpm build`、`pnpm check:design`、`pnpm format:check` 全部通过。
-- 待人工复核：真实 Token（含 / 不含 `notifications` 权限）各同步一次、新通知与「有新进展」两条路径、已读回写后 GitHub 侧状态、待办回跳原消息；本轮无头 Edge 未能产出截图，未做逐页视觉走查。
+  - 轮询不写 `sync_runs`：通知同步是单表小批量写入，运行记录留给仓库同步；失败状态记在消息源的 `last_error` 上。
+  - 通知接口不返回触发人，`actor` 为空。
+  - 已读回写的 `404` 与「Token 缺 notifications 权限」在 GitHub 侧同为 404：队列按「线程已删除」删行，权限问题由同步轮询在消息源 `last_error` 报出，避免删除过的线程永久 `blocked`。
+- 门禁：`cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test --locked`（49/49）；`pnpm exec tsc --noEmit`、`pnpm lint`、`pnpm test`（6/6）、`pnpm build`、`pnpm check:design`、`pnpm format:check` 全部通过。
+- 待人工复核：真实 Token（含 / 不含 `notifications` 权限）各同步一次、等一轮后台轮询确认新通知自动出现、新通知与「有新进展」两条路径、已读回写后 GitHub 侧状态、断网时标已读后队列按退避重试、待办回跳原消息；本轮无头 Edge 未能产出截图，未做逐页视觉走查。
 
 ### 阶段五：邮件连接器（可延后）
 
@@ -746,7 +750,7 @@ pub struct MigrationNotice {
 - 导出 JSON 与 Markdown，确认字段与数量。
 - 手动创建待办，完成、取消、恢复。
 - 用开发用 ingest 命令造 3 条消息，验证收件箱空状态、角标、已读 / 忽略 / 转待办交互。
-- 确认正式界面没有同步按钮、消息源管理入口或「提取为随手记」入口。
+- 确认正式界面没有同步按钮、消息源管理入口或「提取为随手记」入口；通知只由后台轮询拉取。
 
 ### 9.3 性能
 

@@ -10,9 +10,11 @@ import {
   exportCapturesMarkdown,
   getAppInfo,
   getGithubTokenStatus,
+  getInboxReadBackStatus,
   listGithubRepos,
   listGithubSyncRuns,
   removeGithubRepo,
+  retryInboxReadBack,
   saveGithubToken,
   syncAllGithubRepos,
   syncGithubRepo,
@@ -20,6 +22,7 @@ import {
   type GithubRepo,
   type GithubSyncRun,
   type GithubSyncScope,
+  type InboxReadBackStatus,
 } from "../../lib/api";
 import { formatDate } from "../../lib/format";
 
@@ -54,6 +57,11 @@ function SettingsPage() {
   const [repos, setRepos] = useState<GithubRepo[]>([]);
   const [runs, setRuns] = useState<GithubSyncRun[]>([]);
   const [tokenConfigured, setTokenConfigured] = useState(false);
+  const [readBack, setReadBack] = useState<InboxReadBackStatus>({
+    pending: 0,
+    blocked: 0,
+    lastError: null,
+  });
   const [token, setToken] = useState("");
   const [repositoryUrl, setRepositoryUrl] = useState("");
   const [info, setInfo] = useState<AppInfo | null>(null);
@@ -66,14 +74,16 @@ function SettingsPage() {
 
   const reload = useCallback(async () => {
     try {
-      const [nextRepos, nextRuns, tokenStatus] = await Promise.all([
+      const [nextRepos, nextRuns, tokenStatus, nextReadBack] = await Promise.all([
         listGithubRepos(),
         listGithubSyncRuns(),
         getGithubTokenStatus(),
+        getInboxReadBackStatus(),
       ]);
       setRepos(nextRepos);
       setRuns(nextRuns);
       setTokenConfigured(tokenStatus.configured);
+      setReadBack(nextReadBack);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "加载设置失败。");
     }
@@ -86,15 +96,20 @@ function SettingsPage() {
       .catch(() => setInfo(null));
     if (!isTauri()) return;
     let disposed = false;
-    const listener = getCurrentWindow().listen("github-sync-updated", () => {
-      if (!disposed) void reload();
-    });
-    void listener.then((stop) => {
-      if (disposed) stop();
+    // 后台同步与回写队列都会改动这里的数据，两个事件都触发重载。
+    const listener = Promise.all(
+      ["github-sync-updated", "inbox-read-back-updated"].map((event) =>
+        getCurrentWindow().listen(event, () => {
+          if (!disposed) void reload();
+        }),
+      ),
+    );
+    void listener.then((stops) => {
+      if (disposed) stops.forEach((stop) => stop());
     });
     return () => {
       disposed = true;
-      void listener.then((stop) => stop()).catch(() => {});
+      void listener.then((stops) => stops.forEach((stop) => stop())).catch(() => {});
     };
   }, [reload]);
 
@@ -127,6 +142,26 @@ function SettingsPage() {
       setNotice("GitHub Token 已删除。");
     } catch (deleteError) {
       setError(deleteError instanceof Error ? deleteError.message : "删除 Token 失败。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function retryReadBack() {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const status = await retryInboxReadBack();
+      setReadBack(status);
+      setNotice(
+        status.blocked === 0
+          ? "已重新加入回写队列，稍后自动重试。"
+          : "仍有记录没有通过，请确认 Token 权限后重试。",
+      );
+    } catch (retryError) {
+      setError(retryError instanceof Error ? retryError.message : "重试已读回写失败。");
     } finally {
       setBusy(false);
     }
@@ -272,6 +307,36 @@ function SettingsPage() {
                   </Button>
                 ) : null}
               </form>
+            </Section>
+
+            <Section
+              title="已读回写"
+              description="收件箱里的「已读」会异步同步给 GitHub；瞬时失败按指数退避重试，认证问题会停下来等重新授权。"
+              action={
+                readBack.blocked > 0 ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => void retryReadBack()}
+                  >
+                    重试
+                  </Button>
+                ) : null
+              }
+            >
+              {readBack.pending === 0 && readBack.blocked === 0 ? (
+                <p className="text-sm text-muted-foreground">没有等待回写的已读记录。</p>
+              ) : (
+                <div className="space-y-1">
+                  <p className="font-mono text-xs">
+                    待回写 {readBack.pending} 条 · 需要重新授权 {readBack.blocked} 条
+                  </p>
+                  {readBack.lastError ? (
+                    <p className="text-xs leading-5 text-destructive">{readBack.lastError}</p>
+                  ) : null}
+                </div>
+              )}
             </Section>
 
             <Section

@@ -19,7 +19,18 @@ const originLabels: Record<string, string> = {
   capture: "来自随手记",
 };
 
+/** 收件箱待办再往前追一层：是哪个连接器送进收件箱的。 */
+const inboxOriginLabels: Record<string, string> = {
+  github: "来自 GitHub 通知",
+  email: "来自邮件",
+  rss: "来自 RSS",
+  manual: "来自收件箱",
+};
+
 export function describeOrigin(task: Task): string {
+  if (task.originKind === "inbox" && task.originSourceKind) {
+    return inboxOriginLabels[task.originSourceKind] ?? "来自收件箱";
+  }
   if (!task.originKind) return "手动创建";
   return originLabels[task.originKind] ?? task.originKind;
 }

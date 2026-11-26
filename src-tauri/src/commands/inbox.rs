@@ -2,7 +2,7 @@ use tauri::State;
 
 use crate::{
     application,
-    domain::{InboxCounts, InboxMessage, InboxPage, InboxSource, Task},
+    domain::{InboxCounts, InboxMessage, InboxPage, InboxReadBackStatus, InboxSource, Task},
     infrastructure::{db::Database, secrets},
 };
 
@@ -93,6 +93,28 @@ pub(super) fn ingest_inbox_message_in(
     application::inbox::ingest(database, message).map_err(Into::into)
 }
 
+pub(super) fn get_inbox_read_back_status_in(
+    database: &Database,
+) -> CommandResult<InboxReadBackStatus> {
+    database
+        .inbox_read_back()
+        .status()
+        .map_err(CommandError::from)
+}
+
+/// 手动重试：把 blocked 行放回队列。没有 Token 时先让用户去配，
+/// 否则重置完也只会再失败一次。
+pub(super) fn retry_inbox_read_back_in(database: &Database) -> CommandResult<InboxReadBackStatus> {
+    if secrets::get_github_token()
+        .map_err(CommandError::internal)?
+        .is_none()
+    {
+        return Err(CommandError::validation("请先保存 GitHub Token"));
+    }
+    application::inbox::github::reset_after_token_saved(database).map_err(CommandError::from)?;
+    get_inbox_read_back_status_in(database)
+}
+
 #[tauri::command]
 pub fn list_inbox_messages_page(
     database: State<'_, Database>,
@@ -119,33 +141,13 @@ pub fn get_inbox_message(
     get_inbox_message_in(&database, parse_input(input)?)
 }
 
-/// 本地标记已读后，把「已读」回写给 GitHub；回写失败不回滚本地状态，
-/// 否则用户点了已读却被网络问题打回未读，体验更差。
+/// 已读只写本地并入队，网络动作交给后台回写循环，点已读不会被请求拖住。
 #[tauri::command]
-pub async fn mark_inbox_message_read(
+pub fn mark_inbox_message_read(
     database: State<'_, Database>,
     input: Option<serde_json::Value>,
 ) -> CommandResult<InboxMessage> {
-    let input: IdInput = parse_input(input)?;
-    let message = mark_inbox_message_read_in(&database, input)?;
-    let _ = application::inbox::github::write_read_back(&database, &message).await;
-    Ok(message)
-}
-
-/// 拉取 GitHub 通知。没有 Token 时直接给出可操作的提示，不做无意义的网络请求。
-#[tauri::command]
-pub async fn sync_inbox_github(
-    database: State<'_, Database>,
-) -> CommandResult<application::inbox::github::InboxSyncSummary> {
-    if secrets::get_github_token()
-        .map_err(CommandError::internal)?
-        .is_none()
-    {
-        return Err(CommandError::validation("请先保存 GitHub Token"));
-    }
-    application::inbox::github::sync(&database)
-        .await
-        .map_err(CommandError::internal)
+    mark_inbox_message_read_in(&database, parse_input(input)?)
 }
 
 #[tauri::command]
@@ -184,4 +186,16 @@ pub fn ingest_inbox_message(
         ));
     }
     ingest_inbox_message_in(&database, parse_input(input)?)
+}
+
+#[tauri::command]
+pub fn get_inbox_read_back_status(
+    database: State<'_, Database>,
+) -> CommandResult<InboxReadBackStatus> {
+    get_inbox_read_back_status_in(&database)
+}
+
+#[tauri::command]
+pub fn retry_inbox_read_back(database: State<'_, Database>) -> CommandResult<InboxReadBackStatus> {
+    retry_inbox_read_back_in(&database)
 }

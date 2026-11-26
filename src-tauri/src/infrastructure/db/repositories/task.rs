@@ -18,10 +18,18 @@ type RawTask = (
     String,
     String,
     Option<String>,
+    Option<String>,
 );
 
+/// 来源消息的消息源类型跟着待办一起投影：列表行要写「来自 GitHub 通知」，
+/// 不能为了一个标签对每行再发一次查询。子查询命中的是主键，代价可忽略。
 const TASK_FIELDS: &str =
-    "id, title, note, status, origin_kind, origin_id, created_at, updated_at, completed_at";
+    "id, title, note, status, origin_kind, origin_id, created_at, updated_at, \
+     completed_at, \
+     (SELECT sources.kind
+        FROM inbox_messages AS messages
+        JOIN inbox_sources AS sources ON sources.id = messages.source_id
+       WHERE messages.id = tasks.origin_id AND tasks.origin_kind = 'inbox') AS origin_source_kind";
 
 pub struct TaskRepository {
     database: Database,
@@ -196,6 +204,7 @@ fn raw_task(row: &Row<'_>) -> rusqlite::Result<RawTask> {
         row.get(6)?,
         row.get(7)?,
         row.get(8)?,
+        row.get(9)?,
     ))
 }
 
@@ -207,6 +216,7 @@ fn decode_task(row: RawTask) -> DbResult<Task> {
         status: parse_value(row.3, "task status")?,
         origin_kind: row.4,
         origin_id: row.5,
+        origin_source_kind: row.9,
         created_at: row.6,
         updated_at: row.7,
         completed_at: row.8,

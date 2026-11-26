@@ -160,3 +160,94 @@ pub struct NewInboxMessage {
     pub related_id: Option<String>,
     pub payload_json: Option<String>,
 }
+
+/// 已读回写队列的状态。`pending` 会按退避时间自动重试，`blocked` 需要人工处理。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadBackStatus {
+    Pending,
+    Blocked,
+}
+
+impl ReadBackStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Blocked => "blocked",
+        }
+    }
+}
+
+impl FromStr for ReadBackStatus {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "pending" => Ok(Self::Pending),
+            "blocked" => Ok(Self::Blocked),
+            _ => Err(format!("unknown read back status: {value}")),
+        }
+    }
+}
+
+/// 失败原因分类只影响重试策略，不参与展示；展示用 `last_error` 的原文。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadBackErrorKind {
+    /// 网络中断、超时或 5xx，属于可恢复的瞬时波动。
+    Transient,
+    /// 限流，下一次尝试按 `x-ratelimit-reset` 或 `retry-after` 安排。
+    RateLimited,
+    /// Token 无效或缺 `notifications` 权限，重试没有意义，等重新授权。
+    Auth,
+    /// 退避次数用尽，仍可能是瞬时问题，提供手动重试入口。
+    Exhausted,
+}
+
+impl ReadBackErrorKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Transient => "transient",
+            Self::RateLimited => "rate_limited",
+            Self::Auth => "auth",
+            Self::Exhausted => "exhausted",
+        }
+    }
+}
+
+impl FromStr for ReadBackErrorKind {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "transient" => Ok(Self::Transient),
+            "rate_limited" => Ok(Self::RateLimited),
+            "auth" => Ok(Self::Auth),
+            "exhausted" => Ok(Self::Exhausted),
+            _ => Err(format!("unknown read back error kind: {value}")),
+        }
+    }
+}
+
+/// 队列中的一条已读回写：只在远端写入失败后存在，成功后即删除。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InboxReadBack {
+    pub id: String,
+    pub message_id: String,
+    pub source_id: String,
+    pub external_id: String,
+    pub status: ReadBackStatus,
+    pub attempts: u32,
+    pub next_attempt_at: String,
+    pub last_error: Option<String>,
+    pub last_error_kind: Option<ReadBackErrorKind>,
+}
+
+/// 设置页与收件箱共同展示的队列概览，一次查询给出计数与最近一次错误。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InboxReadBackStatus {
+    pub pending: i64,
+    pub blocked: i64,
+    pub last_error: Option<String>,
+}

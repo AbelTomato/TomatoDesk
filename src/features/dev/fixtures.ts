@@ -13,8 +13,8 @@ import type {
   InboxMessage,
   InboxPage,
   InboxPageInput,
+  InboxReadBackStatus,
   InboxSource,
-  InboxSyncSummary,
   MigrationNotice,
   RepoDetail,
   RepoSummary,
@@ -171,6 +171,7 @@ const tasks: Task[] = [
     status: "open",
     originKind: "manual",
     originId: null,
+    originSourceKind: null,
     createdAt: hoursAgo(8),
     updatedAt: minutesAgo(35),
     completedAt: null,
@@ -182,6 +183,7 @@ const tasks: Task[] = [
     status: "open",
     originKind: "manual",
     originId: null,
+    originSourceKind: null,
     createdAt: daysAgo(1),
     updatedAt: hoursAgo(3),
     completedAt: null,
@@ -193,6 +195,7 @@ const tasks: Task[] = [
     status: "open",
     originKind: "inbox",
     originId: "message-3",
+    originSourceKind: "github",
     createdAt: daysAgo(2),
     updatedAt: hoursAgo(5),
     completedAt: null,
@@ -204,6 +207,7 @@ const tasks: Task[] = [
     status: "done",
     originKind: "manual",
     originId: null,
+    originSourceKind: null,
     createdAt: daysAgo(3),
     updatedAt: daysAgo(1),
     completedAt: daysAgo(1),
@@ -215,6 +219,7 @@ const tasks: Task[] = [
     status: "cancelled",
     originKind: "manual",
     originId: null,
+    originSourceKind: null,
     createdAt: daysAgo(4),
     updatedAt: daysAgo(3),
     completedAt: null,
@@ -250,6 +255,7 @@ const createTask = (input: CreateTaskInput): Task => {
     status: "open",
     originKind: "manual",
     originId: null,
+    originSourceKind: null,
     createdAt: nowIso(),
     updatedAt: nowIso(),
     completedAt: null,
@@ -472,6 +478,8 @@ const convertInboxMessage = (id: string): Task => {
   });
   created.originKind = "inbox";
   created.originId = message.id;
+  created.originSourceKind =
+    inboxSources.find((source) => source.id === message.sourceId)?.kind ?? null;
   message.triagedAt = nowIso();
   message.triageOutcome = "task";
   message.triageRefId = created.id;
@@ -480,23 +488,6 @@ const convertInboxMessage = (id: string): Task => {
 };
 
 /** 预览模式下不造新消息，只推进来源的同步时间，用来核对按钮与提示。 */
-const syncInboxGithub = (): InboxSyncSummary => {
-  const source = inboxSources.find((entry) => entry.kind === "github");
-  const syncedAt = nowIso();
-  if (source) {
-    source.lastSyncedAt = syncedAt;
-    source.updatedAt = syncedAt;
-    source.lastError = null;
-  }
-  return {
-    sourceId: source?.id ?? "source-github",
-    fetchedCount: 0,
-    ingestedCount: 0,
-    pendingCount: inboxCounts().pending,
-    syncedAt,
-  };
-};
-
 const repos: RepoSummary[] = [
   {
     id: repoId,
@@ -969,6 +960,7 @@ const commentsFor = (id: string): ThreadComments => {
 
 const appInfo: AppInfo = { name: "TomatoDesk", version: "0.3.0", environment: "development" };
 const migrationNotice: MigrationNotice = { migratedTo: null, backupPath: null, message: null };
+const readBackStatus: InboxReadBackStatus = { pending: 0, blocked: 0, lastError: null };
 
 export const fixtures = {
   counts,
@@ -988,7 +980,7 @@ export const fixtures = {
   dismissInboxMessage,
   convertInboxMessage,
   getInboxMessage: findMessage,
-  syncInboxGithub,
+  readBackStatus,
   repos,
   repo,
   threads,
