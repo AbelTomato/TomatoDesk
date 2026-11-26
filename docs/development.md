@@ -28,6 +28,8 @@ pnpm tauri dev
   - `?capture`：快速收集窗口。
   - `?preview` 与 fixtures 只在 `import.meta.env.DEV` 下生效，生产构建会被摇掉。
 
+- 邮件连接器联调可用 `src-tauri/tests/email_probe.rs`（默认 `#[ignore]`）：设置 `TOMATODESK_IMAP_HOST` / `TOMATODESK_IMAP_USER` / `TOMATODESK_IMAP_PASS` 后运行 `cargo test --manifest-path src-tauri/Cargo.toml probe_imap -- --ignored --nocapture`；不设账号时只验证 TLS 握手与服务器问候。包装脚本会吞掉裸 `--`，这条直接调 cargo。背景见 `docs/execution-plans/2026-11-26-inbox-email-connector.md`。
+
 工程进度和验证记录见 `docs/execution-plans/` 与 `docs/development-logs/`。
 
 ## 构建 Windows 安装包
