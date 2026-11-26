@@ -55,6 +55,7 @@ pub fn run() {
             commands::update_repo_meta,
             commands::list_repo_threads,
             commands::get_thread,
+            commands::refresh_thread_comments,
             commands::list_repo_releases,
             commands::export_items_json,
             commands::export_items_markdown

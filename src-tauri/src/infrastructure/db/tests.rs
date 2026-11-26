@@ -1,8 +1,8 @@
 use super::Database;
 use crate::domain::{
-    GithubRelease, GithubThread, ItemKind, ItemPageQuery, ItemSort, ItemStatus, ItemSummary,
-    KeysetCursor, NewItem, NewSyncRun, SyncRunStatus, ThreadKind, ThreadQuery, ThreadRelationship,
-    ThreadState, ThreadSummary,
+    GithubRelease, GithubThread, GithubThreadComment, ItemKind, ItemPageQuery, ItemSort,
+    ItemStatus, ItemSummary, KeysetCursor, NewItem, NewSyncRun, SyncRunStatus, ThreadKind,
+    ThreadQuery, ThreadRelationship, ThreadState, ThreadSummary,
 };
 use uuid::Uuid;
 
@@ -77,7 +77,7 @@ fn migrations_are_idempotent_and_items_support_crud() {
             )
         })
         .unwrap();
-    assert_eq!(migration_count, 3);
+    assert_eq!(migration_count, 4);
 
     let items = db.items();
     let created = items.create(item("First title", "first note")).unwrap();
@@ -290,6 +290,78 @@ fn repo_workspace_upserts_threads_releases_and_counts_by_relation() {
             .is_empty()
     );
     assert_eq!(db.items().get(&attached.id).unwrap().unwrap().repo_id, None);
+}
+
+#[test]
+fn thread_comments_are_replaced_in_order_and_cascade_with_the_thread() {
+    let db = Database::in_memory().unwrap();
+    let repos = db.github_repos();
+    let repo = repos.create("owner", "project").unwrap();
+    let pr = thread(&repo.id, 7, ThreadState::Open);
+    repos
+        .apply_sync(&repo, std::slice::from_ref(&pr), &[])
+        .unwrap();
+
+    let comment = |github_id: i64, created_at: &str, body: &str| GithubThreadComment {
+        id: Uuid::new_v4().to_string(),
+        thread_id: pr.id.clone(),
+        github_id,
+        author: Some("someone".into()),
+        body: body.into(),
+        url: format!("https://github.com/owner/project/pull/7#issuecomment-{github_id}"),
+        created_at: created_at.into(),
+        updated_at: created_at.into(),
+        synced_at: "2026-11-25T01:00:00Z".into(),
+    };
+
+    // 传入顺序故意打乱，读出来必须按创建时间升序。
+    let comments = vec![
+        comment(2, "2026-11-25T00:02:00Z", "第二条"),
+        comment(1, "2026-11-25T00:01:00Z", "第一条"),
+    ];
+    db.github_threads()
+        .replace_comments(&pr.id, &comments, "2026-11-25T01:00:00Z")
+        .unwrap();
+
+    let detail = db.github_threads().get(&pr.id).unwrap().unwrap();
+    assert_eq!(
+        detail.comments_synced_at.as_deref(),
+        Some("2026-11-25T01:00:00Z")
+    );
+    assert_eq!(
+        detail
+            .comments
+            .iter()
+            .map(|comment| comment.github_id)
+            .collect::<Vec<_>>(),
+        vec![1, 2],
+        "comments are ordered by created_at"
+    );
+
+    // 再次替换：GitHub 侧删除的评论不能残留。
+    db.github_threads()
+        .replace_comments(
+            &pr.id,
+            &[comment(1, "2026-11-25T00:01:00Z", "改过的正文")],
+            "2026-11-25T02:00:00Z",
+        )
+        .unwrap();
+    let detail = db.github_threads().get(&pr.id).unwrap().unwrap();
+    assert_eq!(detail.comments.len(), 1);
+    assert_eq!(detail.comments[0].body, "改过的正文");
+
+    // 删除仓库连带删除线程与评论。
+    repos.delete(&repo.id).unwrap();
+    let remaining: i64 = db
+        .with_connection(|connection| {
+            Ok(
+                connection.query_row("SELECT COUNT(*) FROM github_thread_comments", [], |row| {
+                    row.get(0)
+                })?,
+            )
+        })
+        .unwrap();
+    assert_eq!(remaining, 0);
 }
 
 #[test]

@@ -142,6 +142,17 @@ pub struct GithubReview {
     pub submitted_at: Option<String>,
 }
 
+/// 对话评论。PR 与 Issue 共用 `/issues/{number}/comments`。
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct GithubComment {
+    pub id: u64,
+    pub body: Option<String>,
+    pub html_url: String,
+    pub user: Option<GithubUser>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 #[derive(Clone)]
 pub struct GithubClient {
     client: Client,
@@ -242,6 +253,19 @@ impl GithubClient {
     ) -> Result<Vec<GithubReview>, GithubError> {
         let url = endpoint(&format!(
             "/repos/{owner}/{name}/pulls/{number}/reviews?per_page={PER_PAGE}"
+        ))?;
+        self.get_pages(url, |_| false).await
+    }
+
+    /// 对话评论：PR 与 Issue 同一个端点，按创建时间升序返回。
+    pub async fn issue_comments(
+        &self,
+        owner: &str,
+        name: &str,
+        number: i64,
+    ) -> Result<Vec<GithubComment>, GithubError> {
+        let url = endpoint(&format!(
+            "/repos/{owner}/{name}/issues/{number}/comments?per_page={PER_PAGE}"
         ))?;
         self.get_pages(url, |_| false).await
     }

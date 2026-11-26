@@ -288,6 +288,21 @@ impl ListRepoThreadsInput {
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThreadCommentsInput {
+    pub id: String,
+    /// 用户点「刷新」时忽略缓存。
+    pub force: Option<bool>,
+}
+
+impl ThreadCommentsInput {
+    pub(super) fn validate(self) -> CommandResult<(String, bool)> {
+        let id = required_text("id", self.id, MAX_ID_LENGTH)?;
+        Ok((id, self.force.unwrap_or(false)))
+    }
+}
+
 fn optional_text(
     field: &str,
     value: Option<String>,

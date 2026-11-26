@@ -34,6 +34,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "repo_workspace",
         sql: include_str!("../../../migrations/0003_repo_workspace.sql"),
     },
+    Migration {
+        version: 4,
+        name: "thread_comments",
+        sql: include_str!("../../../migrations/0004_thread_comments.sql"),
+    },
 ];
 
 /// 本次启动执行了迁移时留下的痕迹，供前端提示「需要重新同步」。

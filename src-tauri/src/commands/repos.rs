@@ -1,12 +1,15 @@
 use tauri::State;
 
 use crate::{
+    application,
     domain::{GithubRelease, RepoDetail, RepoSummary, ThreadDetail, ThreadPage},
     infrastructure::db::Database,
 };
 
 use super::{
-    dto::{ItemIdInput, ListRepoThreadsInput, UpdateRepoMetaInput, parse_input},
+    dto::{
+        ItemIdInput, ListRepoThreadsInput, ThreadCommentsInput, UpdateRepoMetaInput, parse_input,
+    },
     error::{CommandError, CommandResult},
 };
 
@@ -104,6 +107,17 @@ pub fn get_thread(
     input: Option<serde_json::Value>,
 ) -> CommandResult<ThreadDetail> {
     get_thread_in(&database, parse_input(input)?)
+}
+
+#[tauri::command]
+pub async fn refresh_thread_comments(
+    database: State<'_, Database>,
+    input: Option<serde_json::Value>,
+) -> CommandResult<application::github::ThreadComments> {
+    let (id, force) = parse_input::<ThreadCommentsInput>(input)?.validate()?;
+    application::github::load_thread_comments(&database, &id, force)
+        .await
+        .map_err(CommandError::internal)
 }
 
 #[tauri::command]

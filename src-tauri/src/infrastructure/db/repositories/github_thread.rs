@@ -1,8 +1,11 @@
-use rusqlite::{OptionalExtension, Row, Transaction, params, params_from_iter, types::Value};
+use rusqlite::{
+    Connection, OptionalExtension, Row, Transaction, params, params_from_iter, types::Value,
+};
 
 use crate::{
     domain::{
-        GithubThread, ThreadDetail, ThreadPage, ThreadQuery, ThreadRelationship, ThreadSummary,
+        GithubThread, GithubThreadComment, ThreadDetail, ThreadPage, ThreadQuery,
+        ThreadRelationship, ThreadSummary,
     },
     infrastructure::db::{Database, DbError, DbResult},
 };
@@ -80,22 +83,86 @@ impl GithubThreadRepository {
         })
     }
 
-    /// 详情：正文只在这里取，列表不携带。
+    /// 详情：正文与本地评论只在这里取，列表不携带。
     pub fn get(&self, id: &str) -> DbResult<Option<ThreadDetail>> {
         self.database.with_connection(|connection| {
             let result = connection
                 .query_row(
-                    &format!("SELECT {THREAD_FIELDS} FROM github_threads WHERE id = ?1"),
+                    &format!(
+                        "SELECT {THREAD_FIELDS}, comments_synced_at
+                         FROM github_threads WHERE id = ?1"
+                    ),
                     [id],
-                    map_thread,
+                    |row| {
+                        let thread = map_thread(row)?;
+                        let comments_synced_at: Option<String> = row.get("comments_synced_at")?;
+                        Ok((thread, comments_synced_at))
+                    },
                 )
                 .optional()?;
-            Ok(result.map(|thread| ThreadDetail {
-                body: thread.body.clone(),
-                summary: ThreadSummary::from(&thread),
-            }))
+            result
+                .map(|(thread, comments_synced_at)| {
+                    Ok(ThreadDetail {
+                        body: thread.body.clone(),
+                        summary: ThreadSummary::from(&thread),
+                        comments: comments_for(connection, id)?,
+                        comments_synced_at,
+                    })
+                })
+                .transpose()
         })
     }
+
+    /// 整批替换某个线程的评论：GitHub 侧删除的评论会在下一次刷新时消失。
+    pub fn replace_comments(
+        &self,
+        thread_id: &str,
+        comments: &[GithubThreadComment],
+        synced_at: &str,
+    ) -> DbResult<()> {
+        self.database.with_transaction(|transaction| {
+            transaction.execute(
+                "DELETE FROM github_thread_comments WHERE thread_id = ?1",
+                [thread_id],
+            )?;
+            for comment in comments {
+                transaction.execute(
+                    "INSERT INTO github_thread_comments(
+                         id, thread_id, github_id, author, body, url,
+                         created_at, updated_at, synced_at
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    params![
+                        comment.id,
+                        comment.thread_id,
+                        comment.github_id,
+                        comment.author,
+                        comment.body,
+                        comment.url,
+                        comment.created_at,
+                        comment.updated_at,
+                        comment.synced_at
+                    ],
+                )?;
+            }
+            transaction.execute(
+                "UPDATE github_threads SET comments_synced_at = ?2 WHERE id = ?1",
+                params![thread_id, synced_at],
+            )?;
+            Ok(())
+        })
+    }
+}
+
+/// 评论按创建时间升序；同一时间戳用 GitHub 的 id 兜底，保证顺序稳定。
+fn comments_for(connection: &Connection, thread_id: &str) -> DbResult<Vec<GithubThreadComment>> {
+    let mut statement = connection.prepare(
+        "SELECT id, thread_id, github_id, author, body, url, created_at, updated_at, synced_at
+         FROM github_thread_comments
+         WHERE thread_id = ?1
+         ORDER BY created_at ASC, github_id ASC",
+    )?;
+    let rows = statement.query_map([thread_id], map_comment)?;
+    rows.map(|row| row.map_err(DbError::from)).collect()
 }
 
 fn relationship_filter(relationship: ThreadRelationship) -> &'static str {
@@ -161,6 +228,20 @@ fn map_summary(row: &Row<'_>) -> rusqlite::Result<ThreadSummary> {
         updated_at: row.get("updated_at")?,
         closed_at: row.get("closed_at")?,
         merged_at: row.get("merged_at")?,
+    })
+}
+
+fn map_comment(row: &Row<'_>) -> rusqlite::Result<GithubThreadComment> {
+    Ok(GithubThreadComment {
+        id: row.get("id")?,
+        thread_id: row.get("thread_id")?,
+        github_id: row.get("github_id")?,
+        author: row.get("author")?,
+        body: row.get("body")?,
+        url: row.get("url")?,
+        created_at: row.get("created_at")?,
+        updated_at: row.get("updated_at")?,
+        synced_at: row.get("synced_at")?,
     })
 }
 

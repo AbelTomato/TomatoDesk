@@ -6,8 +6,8 @@ use uuid::Uuid;
 
 use crate::{
     domain::{
-        GithubRelease, GithubRepo, GithubThread, NewSyncRun, README_TEXT_MAX_CHARS, SyncRunStatus,
-        ThreadKind, ThreadState, excerpt, readme_summary,
+        GithubRelease, GithubRepo, GithubThread, GithubThreadComment, NewSyncRun,
+        README_TEXT_MAX_CHARS, SyncRunStatus, ThreadKind, ThreadState, excerpt, readme_summary,
     },
     infrastructure::{
         db::Database,
@@ -114,6 +114,131 @@ pub async fn sync_all_github_repos(database: &Database) -> Result<Vec<SyncSummar
         Ok(summaries)
     } else {
         Err(errors.join("；"))
+    }
+}
+
+/// 详情页评论：本地缓存 + 按需刷新。失败不当作错误，退回缓存并标记 `stale`。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadComments {
+    pub comments: Vec<GithubThreadComment>,
+    pub synced_at: Option<String>,
+    pub stale: bool,
+    pub error: Option<String>,
+}
+
+/// 打开详情时加载评论：本地够新就直接返回，否则拉一次并整批替换。
+pub async fn load_thread_comments(
+    database: &Database,
+    thread_id: &str,
+    force: bool,
+) -> Result<ThreadComments, String> {
+    let detail = database
+        .github_threads()
+        .get(thread_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "GitHub 线程不存在".to_owned())?;
+    let cached = detail.comments;
+    let synced_at = detail.comments_synced_at;
+
+    if !force
+        && comments_are_fresh(
+            synced_at.as_deref(),
+            &detail.summary.updated_at,
+            cached.len(),
+            detail.summary.comment_count,
+        )
+    {
+        return Ok(ThreadComments {
+            comments: cached,
+            synced_at,
+            stale: false,
+            error: None,
+        });
+    }
+
+    let repo = database
+        .github_repos()
+        .get(&detail.summary.repo_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "GitHub 仓库不存在".to_owned())?;
+    let Some(token) = secrets::get_github_token().map_err(|error| error.to_string())? else {
+        return Ok(ThreadComments {
+            comments: cached,
+            synced_at,
+            stale: true,
+            error: Some("请先保存 GitHub Token，评论需要联网加载。".into()),
+        });
+    };
+    let client =
+        GithubClient::new(token, Duration::from_secs(20)).map_err(|error| error.to_string())?;
+
+    match client
+        .issue_comments(&repo.owner, &repo.name, detail.summary.number)
+        .await
+    {
+        Ok(remote) => {
+            let synced_at = now_iso();
+            let comments = remote
+                .into_iter()
+                .filter_map(|comment| {
+                    let body = comment.body?;
+                    if body.trim().is_empty() {
+                        return None;
+                    }
+                    Some(GithubThreadComment {
+                        id: Uuid::new_v4().to_string(),
+                        thread_id: thread_id.to_owned(),
+                        github_id: comment.id as i64,
+                        author: comment.user.map(|user| user.login),
+                        body,
+                        url: comment.html_url,
+                        created_at: comment.created_at,
+                        updated_at: comment.updated_at,
+                        synced_at: synced_at.clone(),
+                    })
+                })
+                .collect::<Vec<_>>();
+            database
+                .github_threads()
+                .replace_comments(thread_id, &comments, &synced_at)
+                .map_err(|error| error.to_string())?;
+            Ok(ThreadComments {
+                comments,
+                synced_at: Some(synced_at),
+                stale: false,
+                error: None,
+            })
+        }
+        // 限流、断网、Token 失效都走这里：保留缓存，界面提示「可能不是最新」。
+        Err(error) => Ok(ThreadComments {
+            comments: cached,
+            synced_at,
+            stale: true,
+            error: Some(error.to_string()),
+        }),
+    }
+}
+
+/// 缓存是否仍然可信：同步时间不早于线程更新时间，且条数不少于 `comment_count`。
+fn comments_are_fresh(
+    synced_at: Option<&str>,
+    updated_at: &str,
+    cached: usize,
+    expected: i64,
+) -> bool {
+    let Some(synced_at) = synced_at else {
+        return false;
+    };
+    if (cached as i64) < expected {
+        return false;
+    }
+    match (
+        chrono::DateTime::parse_from_rfc3339(synced_at),
+        chrono::DateTime::parse_from_rfc3339(updated_at),
+    ) {
+        (Ok(synced), Ok(updated)) => synced >= updated,
+        _ => false,
     }
 }
 
@@ -470,7 +595,7 @@ fn now_iso() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{SyncScope, ThreadRelations, infer_relations};
+    use super::{SyncScope, ThreadRelations, comments_are_fresh, infer_relations};
 
     #[test]
     fn relations_cover_author_assignee_review_request_and_reviewed() {
@@ -520,5 +645,29 @@ mod tests {
         );
         assert_eq!(SyncScope::Full.state(None), "all");
         assert!(!SyncScope::Full.uses_cursor());
+    }
+
+    #[test]
+    fn comments_cache_is_fresh_only_when_synced_after_the_thread_update() {
+        let updated = "2026-11-25T10:00:00Z";
+        assert!(comments_are_fresh(
+            Some("2026-11-25T10:00:01.000Z"),
+            updated,
+            3,
+            3
+        ));
+        assert!(
+            !comments_are_fresh(Some("2026-11-25T09:59:59.000Z"), updated, 3, 3),
+            "a comment added after the last sync must trigger a refresh"
+        );
+        assert!(
+            !comments_are_fresh(Some("2026-11-25T10:00:01.000Z"), updated, 2, 3),
+            "a lower cached count means something is missing"
+        );
+        assert!(!comments_are_fresh(None, updated, 3, 3));
+        assert!(
+            !comments_are_fresh(Some("not-a-date"), updated, 3, 3),
+            "unparseable timestamps are treated as stale"
+        );
     }
 }

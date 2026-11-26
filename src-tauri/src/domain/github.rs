@@ -262,6 +262,24 @@ pub struct ThreadDetail {
     #[serde(flatten)]
     pub summary: ThreadSummary,
     pub body: Option<String>,
+    /// 本地缓存的评论，按创建时间升序；打开详情时先给缓存，再按需刷新。
+    pub comments: Vec<GithubThreadComment>,
+    pub comments_synced_at: Option<String>,
+}
+
+/// 一条对话评论。PR 与 Issue 共用，代码行级 review comments 不在范围内。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubThreadComment {
+    pub id: String,
+    pub thread_id: String,
+    pub github_id: i64,
+    pub author: Option<String>,
+    pub body: String,
+    pub url: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub synced_at: String,
 }
 
 #[derive(Debug, Clone)]
