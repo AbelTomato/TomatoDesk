@@ -12,6 +12,7 @@ pub enum GithubError {
     Request(String),
     RateLimited(Option<String>),
     Unauthorized,
+    MissingNotificationsScope,
     NotFound,
     Api(String),
 }
@@ -41,6 +42,10 @@ impl std::fmt::Display for GithubError {
                 None => formatter.write_str("GitHub API 已限流，请稍后重试"),
             },
             Self::Unauthorized => formatter.write_str("GitHub Token 无效或权限不足"),
+            Self::MissingNotificationsScope => formatter.write_str(
+                "GitHub Token 缺少 notifications 权限：经典 Token 需勾选 notifications，\
+                 Fine-grained Token 需授予 Notifications 的只读权限",
+            ),
             Self::NotFound => formatter.write_str("GitHub 仓库不存在或当前 Token 无权访问"),
             Self::Api(message) => write!(formatter, "GitHub API 返回错误：{message}"),
         }
@@ -151,6 +156,36 @@ pub struct GithubComment {
     pub user: Option<GithubUser>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// `/notifications` 只返回通知摘要：标题、类型、仓库与最后更新时间。
+/// PR / Issue 的正文与评论仍由仓库模块负责，这里不重复抓取。
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct GithubNotification {
+    /// 通知线程 id，同时用于 `PATCH /notifications/threads/{id}` 回写已读。
+    pub id: serde_json::Value,
+    #[serde(default)]
+    pub unread: bool,
+    pub reason: String,
+    pub updated_at: String,
+    pub subject: GithubNotificationSubject,
+    pub repository: GithubNotificationRepository,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct GithubNotificationSubject {
+    pub title: String,
+    /// 指向 api.github.com 的资源地址，展示前需要换成 github.com。
+    pub url: Option<String>,
+    pub latest_comment_url: Option<String>,
+    #[serde(rename = "type")]
+    pub kind: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct GithubNotificationRepository {
+    pub full_name: String,
+    pub html_url: String,
 }
 
 #[derive(Clone)]
@@ -270,6 +305,77 @@ impl GithubClient {
         self.get_pages(url, |_| false).await
     }
 
+    /// 当前用户的通知，只取未读：已读通知不会重新进入收件箱。
+    /// `since` 是上次同步时间，调用方会往前留一点重叠，避免秒级边界漏消息。
+    pub async fn notifications(
+        &self,
+        since: Option<&str>,
+    ) -> Result<Vec<GithubNotification>, GithubError> {
+        let mut url = endpoint("/notifications")?;
+        {
+            let mut pairs = url.query_pairs_mut();
+            pairs.append_pair("all", "false");
+            pairs.append_pair("participating", "false");
+            pairs.append_pair("per_page", PER_PAGE);
+            if let Some(since) = since {
+                pairs.append_pair("since", since);
+            }
+        }
+
+        let mut values = Vec::new();
+        loop {
+            let response = self.send(&url).await?;
+            let status = response.status();
+            if !status.is_success() {
+                return Err(notification_error(status, response).await);
+            }
+            let next_url = response
+                .headers()
+                .get(header::LINK)
+                .and_then(|value| value.to_str().ok())
+                .and_then(next_page_url)
+                .map(ToOwned::to_owned);
+            let page = response
+                .json::<Vec<GithubNotification>>()
+                .await
+                .map_err(|error| GithubError::Api(error.to_string()))?;
+            values.extend(page);
+            let Some(next) = next_url else { break };
+            url = Url::parse(&next).map_err(|error| GithubError::Api(error.to_string()))?;
+            if url.scheme() != "https" || url.host_str() != Some("api.github.com") {
+                return Err(GithubError::Api("GitHub API 返回了无效的分页地址".into()));
+            }
+        }
+        Ok(values)
+    }
+
+    /// 把本地「已读」回写到 GitHub：`PATCH /notifications/threads/{id}`。
+    /// 通知 id 必须是数字，避免把任意字符串拼进路径。
+    pub async fn mark_notification_read(&self, thread_id: &str) -> Result<(), GithubError> {
+        if thread_id.is_empty() || !thread_id.chars().all(|value| value.is_ascii_digit()) {
+            return Err(GithubError::Api("通知 id 无效".into()));
+        }
+        let url = endpoint(&format!("/notifications/threads/{thread_id}"))?;
+        let response = self
+            .client
+            .patch(url)
+            .header(header::ACCEPT, "application/vnd.github+json")
+            .header(
+                header::USER_AGENT,
+                concat!("TomatoDesk/", env!("CARGO_PKG_VERSION")),
+            )
+            .header(header::CONTENT_LENGTH, 0)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|error| GithubError::Request(error.to_string()))?;
+        if !response.status().is_success() {
+            let status = response.status();
+            return Err(notification_error(status, response).await);
+        }
+        Ok(())
+    }
+
     fn request(&self, url: &Url) -> reqwest::RequestBuilder {
         self.client
             .get(url.clone())
@@ -361,6 +467,30 @@ impl GithubClient {
         }
         Ok(values)
     }
+}
+
+/// `/notifications` 的 403 / 404 基本都是 Token 没有 `notifications` 权限。
+/// 限流仍然按限流处理，其余情况给出可操作的权限提示，而不是笼统的「API 返回错误」。
+async fn notification_error(status: StatusCode, response: Response) -> GithubError {
+    if status == StatusCode::FORBIDDEN {
+        let remaining = response
+            .headers()
+            .get("x-ratelimit-remaining")
+            .and_then(|value| value.to_str().ok())
+            .map(ToOwned::to_owned);
+        if remaining.as_deref() == Some("0") {
+            return response_error(response).await;
+        }
+        let body = response.text().await.unwrap_or_default();
+        if body.to_ascii_lowercase().contains("rate limit") {
+            return GithubError::RateLimited(None);
+        }
+        return GithubError::MissingNotificationsScope;
+    }
+    if status == StatusCode::NOT_FOUND {
+        return GithubError::MissingNotificationsScope;
+    }
+    response_error(response).await
 }
 
 /// 把非 2xx 响应翻译成可读错误，限流与鉴权分开提示。

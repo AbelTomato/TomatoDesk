@@ -246,6 +246,15 @@ export interface InboxCounts {
   unread: number;
 }
 
+/** 一次 GitHub 通知同步的结果；`pendingCount` 直接用于刷新角标。 */
+export interface InboxSyncSummary {
+  sourceId: string;
+  fetchedCount: number;
+  ingestedCount: number;
+  pendingCount: number;
+  syncedAt: string;
+}
+
 /** 开发用入库入参：字段与后端 `IngestInboxMessageInput` 一致。 */
 export interface IngestInboxMessageInput {
   externalId: string;
@@ -604,6 +613,18 @@ export async function countInboxPending(): Promise<InboxCounts> {
 export async function listInboxSources(): Promise<InboxSource[]> {
   const mocked = await preview((data) => data.inboxSources);
   return mocked ?? call("list_inbox_sources");
+}
+
+/** 按 id 取一条消息：待办回跳原消息时用，不依赖当前列表的筛选结果。 */
+export async function getInboxMessage(id: string): Promise<InboxMessage> {
+  const mocked = await preview((data) => data.getInboxMessage(id));
+  return mocked ?? call("get_inbox_message", { input: { id } });
+}
+
+/** 拉取 GitHub 通知；重复同步只更新同一条消息。 */
+export async function syncInboxGithub(): Promise<InboxSyncSummary> {
+  const mocked = await preview((data) => data.syncInboxGithub());
+  return mocked ?? call("sync_inbox_github");
 }
 
 export async function markInboxMessageRead(id: string): Promise<InboxMessage> {

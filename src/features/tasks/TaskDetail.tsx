@@ -1,7 +1,13 @@
 import { useEffect, useState, type FormEvent } from "react";
 
 import { Badge, Button, Input, Textarea } from "../../components/ui";
-import type { Task } from "../../lib/api";
+import {
+  getInboxMessage,
+  listInboxSources,
+  type InboxMessage,
+  type InboxSource,
+  type Task,
+} from "../../lib/api";
 import { formatDate } from "../../lib/format";
 import { describeOrigin, taskStatusLabels, taskStatusTones } from "./shared";
 
@@ -12,19 +18,71 @@ interface TaskDetailProps {
   onComplete: () => void;
   onCancel: () => void;
   onReopen: () => void;
+  /** 来源是收件箱消息时跳回原消息。 */
+  onOpenMessage: (id: string) => void;
 }
 
 /** 待办详情：标题与备注就地编辑，状态动作按当前状态给出可逆的选择。 */
-function TaskDetail({ task, mutating, onSave, onComplete, onCancel, onReopen }: TaskDetailProps) {
+function TaskDetail({
+  task,
+  mutating,
+  onSave,
+  onComplete,
+  onCancel,
+  onReopen,
+  onOpenMessage,
+}: TaskDetailProps) {
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState("");
   const [draftNote, setDraftNote] = useState("");
   const [saving, setSaving] = useState(false);
+  /** 收件箱来源的原始消息：用来区分「来自 GitHub 通知」并支持跳回。 */
+  const [origin, setOrigin] = useState<{
+    message: InboxMessage;
+    source: InboxSource | null;
+  } | null>(null);
+  const [originLoading, setOriginLoading] = useState(false);
 
   // 切换待办时退出编辑，避免把上一条的草稿写进这一条。
   useEffect(() => {
     setEditing(false);
   }, [task?.id]);
+
+  // 来源是收件箱消息时补一次详情：待办本身只存 origin_id。
+  const originKind = task?.originKind ?? null;
+  const originId = task?.originId ?? null;
+  useEffect(() => {
+    let active = true;
+    setOrigin(null);
+    if (originKind !== "inbox" || !originId) {
+      setOriginLoading(false);
+      return;
+    }
+    setOriginLoading(true);
+    void Promise.all([getInboxMessage(originId), listInboxSources()])
+      .then(([message, sources]) => {
+        if (!active) return;
+        setOrigin({
+          message,
+          source: sources.find((entry) => entry.id === message.sourceId) ?? null,
+        });
+      })
+      .catch(() => {
+        if (active) setOrigin(null);
+      })
+      .finally(() => {
+        if (active) setOriginLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [originId, originKind]);
+
+  const originLabel = task
+    ? origin?.source?.kind === "github"
+      ? "来自 GitHub 通知"
+      : describeOrigin(task)
+    : "";
 
   function startEditing() {
     if (!task) return;
@@ -97,9 +155,7 @@ function TaskDetail({ task, mutating, onSave, onComplete, onCancel, onReopen }: 
                     <Badge tone={taskStatusTones[task.status]}>
                       {taskStatusLabels[task.status]}
                     </Badge>
-                    <span className="font-mono text-xs text-muted-foreground">
-                      {describeOrigin(task)}
-                    </span>
+                    <span className="font-mono text-xs text-muted-foreground">{originLabel}</span>
                   </div>
                   <h3 className="mt-2 text-xl leading-snug font-bold tracking-tight break-words">
                     {task.title}
@@ -133,12 +189,25 @@ function TaskDetail({ task, mutating, onSave, onComplete, onCancel, onReopen }: 
               </div>
               <div>
                 <p className="text-xs font-medium text-muted-foreground">来源</p>
-                <p className="mt-2 font-mono text-xs">
-                  {describeOrigin(task)}
-                  {task.originId ? (
-                    <span className="ml-2 text-muted-foreground">{task.originId}</span>
-                  ) : null}
-                </p>
+                <p className="mt-2 font-mono text-xs">{originLabel}</p>
+                {origin ? (
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => onOpenMessage(origin.message.id)}
+                    >
+                      查看原消息
+                    </Button>
+                    <span className="min-w-0 truncate text-sm text-muted-foreground">
+                      {origin.message.title}
+                    </span>
+                  </div>
+                ) : originLoading ? (
+                  <p className="mt-2 font-mono text-xs text-muted-foreground">正在加载来源…</p>
+                ) : task.originId ? (
+                  <p className="mt-2 font-mono text-xs text-muted-foreground">{task.originId}</p>
+                ) : null}
               </div>
             </div>
           ) : null}

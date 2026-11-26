@@ -1,7 +1,9 @@
 //! 收件箱应用服务：入库、已读、忽略与转为待办。
 //!
 //! 判断动作全部是人工触发，收件箱不会自动流入待办或随手记。
-//! 连接器（阶段四）只负责入库，不碰判断结果。
+//! 连接器只负责入库，不碰判断结果。
+
+pub(crate) mod github;
 
 use crate::{
     domain::{InboxMessage, NewInboxMessage, NewTask, Task, TriageOutcome},

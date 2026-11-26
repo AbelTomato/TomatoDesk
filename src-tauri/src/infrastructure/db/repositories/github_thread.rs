@@ -83,6 +83,21 @@ impl GithubThreadRepository {
         })
     }
 
+    /// 通知只带 PR / Issue 编号，用 `(repo_id, number)` 找回本地线程 id。
+    /// 未同步过的线程返回 `None`，收件箱此时只存外部链接。
+    pub fn find_id(&self, repo_id: &str, number: i64) -> DbResult<Option<String>> {
+        self.database.with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT id FROM github_threads WHERE repo_id = ?1 AND number = ?2",
+                    params![repo_id, number],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(Into::into)
+        })
+    }
+
     /// 详情：正文与本地评论只在这里取，列表不携带。
     pub fn get(&self, id: &str) -> DbResult<Option<ThreadDetail>> {
         self.database.with_connection(|connection| {

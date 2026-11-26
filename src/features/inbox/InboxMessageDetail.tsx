@@ -11,6 +11,8 @@ interface InboxMessageDetailProps {
   onDismiss: () => void;
   onConvert: () => void;
   onOpenLink: () => void;
+  /** 命中本地已同步的线程时为回调，否则为 null（只能走 GitHub）。 */
+  onOpenLocal: (() => void) | null;
 }
 
 /** 收件箱详情：原文只读，动作只有已读、忽略与转为待办。 */
@@ -22,6 +24,7 @@ function InboxMessageDetail({
   onDismiss,
   onConvert,
   onOpenLink,
+  onOpenLocal,
 }: InboxMessageDetailProps) {
   return (
     <section className="min-w-0 overflow-y-auto bg-card px-5 py-6 sm:px-7" aria-label="消息详情">
@@ -76,6 +79,29 @@ function InboxMessageDetail({
                 </p>
               </div>
             ) : null}
+
+            {onOpenLocal || message.url ? (
+              <div>
+                <p className="text-xs font-medium text-muted-foreground">相关</p>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                  {onOpenLocal
+                    ? "已关联本地线程，可看正文与评论；后续进展仍以仓库模块为准。"
+                    : "本地还没有这条线程，只能打开 GitHub 查看。"}
+                </p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {onOpenLocal ? (
+                    <Button size="sm" variant="outline" disabled={mutating} onClick={onOpenLocal}>
+                      在本地查看线程
+                    </Button>
+                  ) : null}
+                  {message.url ? (
+                    <Button size="sm" variant="ghost" disabled={mutating} onClick={onOpenLink}>
+                      在 GitHub 打开
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
           </div>
 
           <div className="mt-8 border-t border-border pt-5">
@@ -102,11 +128,6 @@ function InboxMessageDetail({
                 <Button variant="outline" size="sm" disabled={mutating} onClick={onDismiss}>
                   忽略
                 </Button>
-                {message.url ? (
-                  <Button variant="ghost" size="sm" disabled={mutating} onClick={onOpenLink}>
-                    打开原链接
-                  </Button>
-                ) : null}
               </div>
             )}
 

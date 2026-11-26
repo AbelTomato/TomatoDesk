@@ -57,6 +57,21 @@ impl GithubRepoRepository {
             .with_connection(|connection| get_repo(connection, id))
     }
 
+    /// 通知只带 `owner/name`，用它找本地仓库 id；未关注或未同步时返回 `None`。
+    pub fn find_id(&self, owner: &str, name: &str) -> DbResult<Option<String>> {
+        self.database.with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT id FROM github_repos
+                     WHERE owner = ?1 COLLATE NOCASE AND name = ?2 COLLATE NOCASE",
+                    params![owner, name],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(Into::into)
+        })
+    }
+
     pub fn list(&self) -> DbResult<Vec<GithubRepo>> {
         self.database.with_connection(|connection| {
             let mut statement = connection.prepare(&format!(

@@ -41,7 +41,12 @@ const navItems: Array<{ id: View; label: string }> = [
 ];
 
 /** `?view=captures&repo=<id>&thread=<id>` 只用于逐页走查与分享定位，缺省是随手记页。 */
-function readInitialRoute(): { view: View; repoId: string | null; threadId: string | null } {
+function readInitialRoute(): {
+  view: View;
+  repoId: string | null;
+  threadId: string | null;
+  inboxMessageId: string | null;
+} {
   const params = new URLSearchParams(window.location.search);
   const requested = params.get("view");
   const view = navItems.some((item) => item.id === requested) ? (requested as View) : "captures";
@@ -49,6 +54,7 @@ function readInitialRoute(): { view: View; repoId: string | null; threadId: stri
     view,
     repoId: view === "repos" ? params.get("repo") : null,
     threadId: view === "repos" ? params.get("thread") : null,
+    inboxMessageId: view === "inbox" ? params.get("message") : null,
   };
 }
 
@@ -58,6 +64,7 @@ function AppShell() {
   const [repoId, setRepoId] = useState<string | null>(route.repoId);
   /** 只作为详情页的初值：真正的开关在 RepoDetail 内部，返回列表时由这里清空。 */
   const [threadId, setThreadId] = useState<string | null>(route.threadId);
+  const [inboxMessageId, setInboxMessageId] = useState<string | null>(route.inboxMessageId);
   const [counts, setCounts] = useState<CaptureCounts>(emptyCounts);
   const [taskCounts, setTaskCounts] = useState<TaskCounts>(emptyTaskCounts);
   const [inboxCounts, setInboxCounts] = useState<InboxCounts>(emptyInboxCounts);
@@ -119,10 +126,24 @@ function AppShell() {
 
   function navigate(next: View) {
     setView(next);
+    setInboxMessageId(null);
     if (next !== "repos") {
       setRepoId(null);
       setThreadId(null);
     }
+  }
+
+  /** 收件箱里的通知命中本地线程时，直接落到仓库详情的线程页。 */
+  function openThread(nextRepoId: string, nextThreadId: string) {
+    setRepoId(nextRepoId);
+    setThreadId(nextThreadId);
+    setView("repos");
+  }
+
+  /** 待办「查看原消息」：回到收件箱并定位到那条消息。 */
+  function openInboxMessage(id: string) {
+    setInboxMessageId(id);
+    setView("inbox");
   }
 
   function openRepo(id: string) {
@@ -203,8 +224,14 @@ function AppShell() {
         ) : null}
 
         <div className="flex min-h-0 flex-1 flex-col">
-          {view === "inbox" ? <InboxPage onOpenTasks={() => navigate("tasks")} /> : null}
-          {view === "tasks" ? <TasksPage /> : null}
+          {view === "inbox" ? (
+            <InboxPage
+              onOpenTasks={() => navigate("tasks")}
+              onOpenThread={openThread}
+              initialMessageId={inboxMessageId}
+            />
+          ) : null}
+          {view === "tasks" ? <TasksPage onOpenMessage={openInboxMessage} /> : null}
           {view === "captures" ? <CapturesPage /> : null}
           {view === "repos" ? (
             repoId ? (

@@ -1,8 +1,8 @@
 use super::{Database, MANUAL_SOURCE_ID};
 use crate::domain::{
     CaptureKind, CapturePageQuery, CaptureSort, CaptureSummary, GithubRelease, GithubThread,
-    GithubThreadComment, KeysetCursor, NewCapture, NewInboxMessage, NewSyncRun, NewTask,
-    SyncRunStatus, TaskPageQuery, TaskStatus, ThreadKind, ThreadQuery, ThreadRelationship,
+    GithubThreadComment, InboxSourceKind, KeysetCursor, NewCapture, NewInboxMessage, NewSyncRun,
+    NewTask, SyncRunStatus, TaskPageQuery, TaskStatus, ThreadKind, ThreadQuery, ThreadRelationship,
     ThreadState, ThreadSummary, TriageOutcome,
 };
 use uuid::Uuid;
@@ -972,4 +972,81 @@ fn opening_a_v5_database_applies_the_task_and_inbox_migrations() {
     assert_eq!(reopened.tasks().counts().unwrap().all, 1);
     drop(reopened);
     std::fs::remove_dir_all(temp_dir).unwrap();
+}
+
+#[test]
+fn github_inbox_source_tracks_cursor_and_lookup_helpers_find_local_rows() {
+    let db = Database::in_memory().unwrap();
+    let sources = db.inbox_sources();
+    let source = sources.ensure_github().unwrap();
+    assert_eq!(source.kind, InboxSourceKind::Github);
+    assert_eq!(sources.ensure_github().unwrap().id, source.id);
+    assert_eq!(sources.list().unwrap().len(), 1, "github source is reused");
+
+    assert_eq!(sources.cursor(&source.id).unwrap(), None);
+    sources
+        .mark_failed(&source.id, "GitHub Token 缺少 notifications 权限")
+        .unwrap();
+    assert_eq!(
+        sources
+            .get(&source.id)
+            .unwrap()
+            .unwrap()
+            .last_error
+            .as_deref(),
+        Some("GitHub Token 缺少 notifications 权限")
+    );
+
+    sources
+        .mark_synced(
+            &source.id,
+            Some("2026-11-26T10:00:00Z"),
+            "2026-11-26T10:00:01Z",
+        )
+        .unwrap();
+    let synced = sources.get(&source.id).unwrap().unwrap();
+    assert_eq!(
+        synced.last_error, None,
+        "a successful sync clears the error"
+    );
+    assert_eq!(
+        synced.last_synced_at.as_deref(),
+        Some("2026-11-26T10:00:01Z")
+    );
+    assert_eq!(
+        sources.cursor(&source.id).unwrap().as_deref(),
+        Some("2026-11-26T10:00:00Z")
+    );
+
+    // 失败不清游标：下一次仍从上次成功的位置继续。
+    sources.mark_failed(&source.id, "限流").unwrap();
+    assert_eq!(
+        sources.cursor(&source.id).unwrap().as_deref(),
+        Some("2026-11-26T10:00:00Z")
+    );
+
+    let repo = db.github_repos().create("TencentCloud", "Octop").unwrap();
+    let mut updated = repo.clone();
+    updated.last_synced_at = Some("2026-11-26T00:00:00Z".into());
+    db.github_repos()
+        .apply_sync(&updated, &[thread(&repo.id, 482, ThreadState::Open)], &[])
+        .unwrap();
+
+    assert_eq!(
+        db.github_repos()
+            .find_id("tencentcloud", "octop")
+            .unwrap()
+            .as_deref(),
+        Some(repo.id.as_str()),
+        "owner and name match case insensitively"
+    );
+    assert_eq!(db.github_repos().find_id("other", "octop").unwrap(), None);
+
+    let thread_id = db
+        .github_threads()
+        .find_id(&repo.id, 482)
+        .unwrap()
+        .expect("synced thread is found by number");
+    assert_eq!(db.github_threads().find_id(&repo.id, 999).unwrap(), None);
+    assert!(db.github_threads().get(&thread_id).unwrap().is_some());
 }

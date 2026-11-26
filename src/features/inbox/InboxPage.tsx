@@ -13,12 +13,15 @@ import {
   countInboxPending,
   convertInboxMessageToTask,
   dismissInboxMessage,
+  getGithubTokenStatus,
+  getThread,
   ingestInboxMessage,
   listInboxMessagesPage,
   listInboxSources,
   markInboxMessageRead,
   markInboxMessageUnread,
   previewMode,
+  syncInboxGithub,
   type InboxCounts,
   type InboxMessage,
   type InboxSource,
@@ -41,7 +44,7 @@ const emptyHints: Record<TriagedFilter, { title: string; hint: string }> = {
     hint: "新的通知会在同步后出现在这里，读完可以先放着，判断留到你决定要做什么的时候。",
   },
   triaged: { title: "还没有判断过的消息", hint: "忽略或转为待办之后，消息会留在这里备查。" },
-  all: { title: "收件箱是空的", hint: "还没有接入连接器，阶段四上线后会按来源自动收消息。" },
+  all: { title: "收件箱是空的", hint: "配置 GitHub Token 后可以同步通知；邮件连接器随后提供。" },
 };
 
 /** 开发窗口用来造消息的样例：点一次写一条，循环使用。 */
@@ -67,12 +70,23 @@ const devSamples = [
 ];
 
 /** 收件箱：来源、消息流、详情三栏；判断动作全部人工触发。 */
-function InboxPage({ onOpenTasks }: { onOpenTasks: () => void }) {
+function InboxPage({
+  onOpenTasks,
+  onOpenThread,
+  initialMessageId,
+}: {
+  onOpenTasks: () => void;
+  /** 通知已关联到本地线程时跳仓库详情；仓库页由外层切换。 */
+  onOpenThread: (repoId: string, threadId: string) => void;
+  /** 从待办「查看原消息」进来时定位到指定消息。 */
+  initialMessageId?: string | null;
+}) {
   const [sources, setSources] = useState<InboxSource[]>([]);
   const [messages, setMessages] = useState<InboxMessage[]>([]);
   const [counts, setCounts] = useState<InboxCounts>(emptyCounts);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [filter, setFilter] = useState<TriagedFilter>("pending");
+  // 带消息 id 进来时先看「全部」，否则已判断的消息不在待判断列表里。
+  const [filter, setFilter] = useState<TriagedFilter>(initialMessageId ? "all" : "pending");
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [category, setCategory] = useState("all");
   const [sourceId, setSourceId] = useState<string | null>(null);
@@ -84,8 +98,11 @@ function InboxPage({ onOpenTasks }: { onOpenTasks: () => void }) {
   const [notice, setNotice] = useState<string | null>(null);
   const [mutating, setMutating] = useState(false);
   const [ingesting, setIngesting] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [tokenConfigured, setTokenConfigured] = useState(false);
   const requestId = useRef(0);
   const sampleIndex = useRef(0);
+  const appliedInitial = useRef(false);
 
   const refreshCounts = useCallback(async () => {
     try {
@@ -144,6 +161,13 @@ function InboxPage({ onOpenTasks }: { onOpenTasks: () => void }) {
     void loadSources();
   }, [loadSources]);
 
+  // 没有 Token 时不暴露同步按钮，避免点下去必然失败。
+  useEffect(() => {
+    void getGithubTokenStatus()
+      .then((status) => setTokenConfigured(status.configured))
+      .catch(() => setTokenConfigured(false));
+  }, []);
+
   const loadMore = useCallback(async () => {
     if (!hasMore || loadingMore || loading || !cursor) return;
     const currentRequest = requestId.current;
@@ -200,10 +224,20 @@ function InboxPage({ onOpenTasks }: { onOpenTasks: () => void }) {
       if (selectedId !== null) setSelectedId(null);
       return;
     }
+    // 从待办回跳时只应用一次，之后用户自己选哪条就停在哪条。
+    if (
+      !appliedInitial.current &&
+      initialMessageId &&
+      messages.some((message) => message.id === initialMessageId)
+    ) {
+      appliedInitial.current = true;
+      setSelectedId(initialMessageId);
+      return;
+    }
     if (!messages.some((message) => message.id === selectedId)) {
       setSelectedId(messages[0].id);
     }
-  }, [messages, selectedId]);
+  }, [initialMessageId, messages, selectedId]);
 
   const selectedMessage = messages.find((message) => message.id === selectedId) ?? null;
   const selectedSource = selectedMessage
@@ -288,6 +322,47 @@ function InboxPage({ onOpenTasks }: { onOpenTasks: () => void }) {
     }
   }
 
+  /** 命中本地线程时跳仓库详情，未同步时退回 GitHub 原链接。 */
+  async function openRelated() {
+    const message = selectedMessage;
+    if (!message || message.relatedKind !== "github_thread" || !message.relatedId) return;
+    try {
+      const thread = await getThread(message.relatedId);
+      onOpenThread(thread.repoId, thread.id);
+    } catch {
+      setError("本地线程不存在或尚未同步，已改为在 GitHub 打开。");
+      if (message.url) {
+        try {
+          await openExternal(message.url);
+        } catch {
+          // 外部链接也失败时保留提示，用户可以手工复制 URL。
+        }
+      }
+    }
+  }
+
+  async function syncGitHub() {
+    if (syncing || mutating) return;
+    setSyncing(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const summary = await syncInboxGithub();
+      // load 会清掉旧提示，所以先刷新再写结果。
+      await Promise.all([load(), loadSources()]);
+      setNotice(
+        summary.fetchedCount === 0
+          ? "没有新的 GitHub 通知。"
+          : `同步完成：拉到 ${summary.fetchedCount} 条通知，待判断 ${summary.pendingCount} 条。`,
+      );
+      notifyInboxChanged();
+    } catch (syncError) {
+      setError(syncError instanceof Error ? syncError.message : "同步 GitHub 通知失败，请重试。");
+    } finally {
+      setSyncing(false);
+    }
+  }
+
   async function ingestSample() {
     const sample = devSamples[sampleIndex.current % devSamples.length];
     sampleIndex.current += 1;
@@ -350,6 +425,16 @@ function InboxPage({ onOpenTasks }: { onOpenTasks: () => void }) {
             <Button variant="ghost" size="sm" onClick={() => void load()}>
               刷新
             </Button>
+            {tokenConfigured ? (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={syncing}
+                onClick={() => void syncGitHub()}
+              >
+                {syncing ? "同步中…" : "同步 GitHub"}
+              </Button>
+            ) : null}
           </div>
         </div>
 
@@ -541,6 +626,11 @@ function InboxPage({ onOpenTasks }: { onOpenTasks: () => void }) {
           onDismiss={() => void dismiss()}
           onConvert={() => void convert()}
           onOpenLink={() => void openSelectedLink()}
+          onOpenLocal={
+            selectedMessage?.relatedKind === "github_thread" && selectedMessage.relatedId
+              ? () => void openRelated()
+              : null
+          }
         />
       </div>
     </div>

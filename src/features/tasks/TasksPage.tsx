@@ -39,7 +39,7 @@ const emptyHints: Record<StatusFilter, { title: string; hint: string }> = {
 };
 
 /** 待办：清单 + 详情，字段只保留标题、备注、状态与来源。 */
-function TasksPage() {
+function TasksPage({ onOpenMessage }: { onOpenMessage: (id: string) => void }) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [counts, setCounts] = useState<TaskCounts>(emptyCounts);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -317,6 +317,7 @@ function TasksPage() {
           onComplete={() => void changeStatus("done")}
           onCancel={() => void changeStatus("cancelled")}
           onReopen={() => void changeStatus("open")}
+          onOpenMessage={onOpenMessage}
         />
       </div>
     </div>

@@ -8,6 +8,7 @@ const categoryLabels: Record<string, string> = {
   release: "发布",
   mail: "邮件",
   comment: "评论",
+  notification: "其他通知",
 };
 
 export function describeCategory(category: string): string {
@@ -21,6 +22,8 @@ export const categoryOptions: Array<{ value: string; label: string }> = [
   { value: "assigned", label: "指派" },
   { value: "ci_failed", label: "CI 失败" },
   { value: "release", label: "发布" },
+  { value: "comment", label: "评论" },
+  { value: "notification", label: "其他通知" },
   { value: "mail", label: "邮件" },
 ];
 

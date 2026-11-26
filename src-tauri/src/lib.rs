@@ -68,6 +68,8 @@ pub fn run() {
             commands::list_inbox_messages_page,
             commands::count_inbox_pending,
             commands::list_inbox_sources,
+            commands::get_inbox_message,
+            commands::sync_inbox_github,
             commands::mark_inbox_message_read,
             commands::mark_inbox_message_unread,
             commands::dismiss_inbox_message,

@@ -3,7 +3,7 @@ use tauri::State;
 use crate::{
     application,
     domain::{InboxCounts, InboxMessage, InboxPage, InboxSource, Task},
-    infrastructure::db::Database,
+    infrastructure::{db::Database, secrets},
 };
 
 use super::{
@@ -27,6 +27,18 @@ pub(super) fn count_inbox_pending_in(database: &Database) -> CommandResult<Inbox
 
 pub(super) fn list_inbox_sources_in(database: &Database) -> CommandResult<Vec<InboxSource>> {
     database.inbox_sources().list().map_err(Into::into)
+}
+
+pub(super) fn get_inbox_message_in(
+    database: &Database,
+    input: IdInput,
+) -> CommandResult<InboxMessage> {
+    let input = input.validate()?;
+    database
+        .inbox_messages()
+        .get(&input.id)
+        .map_err(CommandError::from)?
+        .ok_or_else(|| CommandError::not_found("inbox message"))
 }
 
 fn change_read_in(database: &Database, input: IdInput, read: bool) -> CommandResult<InboxMessage> {
@@ -100,11 +112,40 @@ pub fn list_inbox_sources(database: State<'_, Database>) -> CommandResult<Vec<In
 }
 
 #[tauri::command]
-pub fn mark_inbox_message_read(
+pub fn get_inbox_message(
     database: State<'_, Database>,
     input: Option<serde_json::Value>,
 ) -> CommandResult<InboxMessage> {
-    mark_inbox_message_read_in(&database, parse_input(input)?)
+    get_inbox_message_in(&database, parse_input(input)?)
+}
+
+/// 本地标记已读后，把「已读」回写给 GitHub；回写失败不回滚本地状态，
+/// 否则用户点了已读却被网络问题打回未读，体验更差。
+#[tauri::command]
+pub async fn mark_inbox_message_read(
+    database: State<'_, Database>,
+    input: Option<serde_json::Value>,
+) -> CommandResult<InboxMessage> {
+    let input: IdInput = parse_input(input)?;
+    let message = mark_inbox_message_read_in(&database, input)?;
+    let _ = application::inbox::github::write_read_back(&database, &message).await;
+    Ok(message)
+}
+
+/// 拉取 GitHub 通知。没有 Token 时直接给出可操作的提示，不做无意义的网络请求。
+#[tauri::command]
+pub async fn sync_inbox_github(
+    database: State<'_, Database>,
+) -> CommandResult<application::inbox::github::InboxSyncSummary> {
+    if secrets::get_github_token()
+        .map_err(CommandError::internal)?
+        .is_none()
+    {
+        return Err(CommandError::validation("请先保存 GitHub Token"));
+    }
+    application::inbox::github::sync(&database)
+        .await
+        .map_err(CommandError::internal)
 }
 
 #[tauri::command]

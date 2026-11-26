@@ -24,7 +24,7 @@ pnpm tauri dev
 - `pnpm test`：运行 Vitest 单测，目前覆盖 Markdown 链接 / 图片的协议白名单（`src/components/markdown/markdownUrl.test.ts`）。
 - 开发模式下可用 URL 参数单独预览界面，不需要启动 Tauri 窗口：
   - `?styleguide`：设计基座（色板、排版、组件）。
-  - `?preview&view=inbox|tasks|captures|repos|search|settings`：用 `src/features/dev/fixtures.ts` 的假数据渲染页面，`&repo=<id>` 直接进仓库详情，`&thread=<id>` 直接开该仓库下的 PR / Issue 详情页。
+  - `?preview&view=inbox|tasks|captures|repos|search|settings`：用 `src/features/dev/fixtures.ts` 的假数据渲染页面，`&repo=<id>` 直接进仓库详情，`&thread=<id>` 直接开该仓库下的 PR / Issue 详情页，`&message=<id>` 直接定位收件箱里的某条消息。
   - `?capture`：快速收集窗口。
   - `?preview` 与 fixtures 只在 `import.meta.env.DEV` 下生效，生产构建会被摇掉。
 

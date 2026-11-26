@@ -14,6 +14,7 @@ import type {
   InboxPage,
   InboxPageInput,
   InboxSource,
+  InboxSyncSummary,
   MigrationNotice,
   RepoDetail,
   RepoSummary,
@@ -476,6 +477,24 @@ const convertInboxMessage = (id: string): Task => {
   message.triageRefId = created.id;
   message.readAt = message.readAt ?? nowIso();
   return { ...created };
+};
+
+/** 预览模式下不造新消息，只推进来源的同步时间，用来核对按钮与提示。 */
+const syncInboxGithub = (): InboxSyncSummary => {
+  const source = inboxSources.find((entry) => entry.kind === "github");
+  const syncedAt = nowIso();
+  if (source) {
+    source.lastSyncedAt = syncedAt;
+    source.updatedAt = syncedAt;
+    source.lastError = null;
+  }
+  return {
+    sourceId: source?.id ?? "source-github",
+    fetchedCount: 0,
+    ingestedCount: 0,
+    pendingCount: inboxCounts().pending,
+    syncedAt,
+  };
 };
 
 const repos: RepoSummary[] = [
@@ -968,6 +987,8 @@ export const fixtures = {
   markInboxRead,
   dismissInboxMessage,
   convertInboxMessage,
+  getInboxMessage: findMessage,
+  syncInboxGithub,
   repos,
   repo,
   threads,

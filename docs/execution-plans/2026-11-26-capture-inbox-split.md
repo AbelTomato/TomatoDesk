@@ -1,6 +1,6 @@
 # 随手记、待办与收件箱的模块拆分方案
 
-- 状态：已确认，阶段一、阶段二、阶段三已实施
+- 状态：已确认，阶段一、阶段二、阶段三、阶段四已实施
 - 日期：2026-11-26
 - 涉及模块：`items` / `inbox` / `capture` / `task` / `repos` / `search` / `export`
 - 目标版本：MVP 为 v0.5.0（阶段一至三），连接器与增强项后续版本推进
@@ -705,6 +705,23 @@ pub struct MigrationNotice {
 - 命中本地线程时跳详情，否则打开 GitHub。
 - 转为待办后，待办能显示「来自 GitHub 通知」并跳回原消息。
 - Token 缺少 `notifications` scope 时有明确错误提示。
+
+落地记录（2026-11-26）：
+
+- 拉取：`infrastructure/github` 新增 `notifications(since)`（只取未读，`all=false`，按 `Link` 翻页）与 `mark_notification_read`（`PATCH /notifications/threads/{id}`）；403 / 404 且非限流时归一为 `MissingNotificationsScope`，提示「经典 Token 需勾选 notifications，Fine-grained Token 需授予 Notifications 只读权限」。
+- 入库：`application/inbox/github.rs` 负责通知 → `NewInboxMessage` 的映射与同步；`external_id` 取通知 id，`external_updated_at` 取 `updated_at`，`title` 取 `subject.title`，`summary` 固定为「仓库 · 原因」，`body` 留空（正文仍回仓库模块），`payload_json` 保存原始通知。`reason` 收敛为 `mention / review_requested / assigned / ci_failed / release / comment / notification`。
+- 去重与增量：沿用 `(source_id, external_id)` upsert，重复同步不产生新消息；`inbox_sources.cursor` 记录上次成功同步时间，下次 `since` 往前留 5 分钟重叠，秒级边界不会漏消息，重叠部分由唯一键消掉。已判断的消息不恢复未读、判断结果不被覆盖；未判断的消息更新后重新变为未读。
+- 线程关联：`PullRequest` / `Issue` 用 `repository.full_name` 找本地仓库、再用编号找本地线程，命中时写 `related_kind = github_thread`、`related_id = 本地线程 id`；未关注或未同步时只存外部链接。`CheckSuite` 落到仓库的 Actions 页，`Release` 落到 Release 列表（API 给的 id 不是 tag），其余类型把 api.github.com 换成 github.com。
+- 已读回写：本地标记已读后异步 `PATCH` 通知线程；回写失败不回滚本地已读，也不阻塞界面（远端只是辅助状态）。
+- 来源状态：`ensure_github()` 固定复用 `source-github`；同步成功写 `last_synced_at` / `cursor` 并清 `last_error`，失败只记录 `last_error`，游标保持在上次成功的位置。
+- 前端：收件箱头部在配置 Token 后出现「同步 GitHub」（未配置时不显示，避免必然失败的按钮）；详情新增「相关」区，「在本地查看线程」在命中本地线程时出现，失败退回 GitHub 链接；待办详情加载 `origin_id` 对应消息，来源显示「来自 GitHub 通知」并提供「查看原消息」，跳回收件箱时用 `?view=inbox&message=<id>` 同款定位逻辑选中该条。
+- 偏差与未做：
+  - 只同步未读通知，GitHub 上已读、本地从未见过的通知不会补进来；这样避免把历史已读事件倒进收件箱。
+  - 没有加定时调度与 `sync_runs` 记录，同步由收件箱按钮手动触发；调度沿用阶段四之后的独立任务。
+  - 通知接口不返回触发人，`actor` 为空；列表行来源仍显示「来自收件箱」，精确来源（GitHub 通知）在待办详情展示。
+  - 已读回写失败静默忽略，界面不区分「本地已读」与「远端已回写」。
+- 门禁：`cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test --locked`（43/43）；`pnpm exec tsc --noEmit`、`pnpm lint`、`pnpm test`（6/6）、`pnpm build`、`pnpm check:design`、`pnpm format:check` 全部通过。
+- 待人工复核：真实 Token（含 / 不含 `notifications` 权限）各同步一次、新通知与「有新进展」两条路径、已读回写后 GitHub 侧状态、待办回跳原消息；本轮无头 Edge 未能产出截图，未做逐页视觉走查。
 
 ### 阶段五：邮件连接器（可延后）
 

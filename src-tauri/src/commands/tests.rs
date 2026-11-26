@@ -834,3 +834,37 @@ fn inbox_commands_ingest_triage_and_convert_exactly_once() {
     assert_eq!(error.code, CommandErrorCode::Validation);
     assert_eq!(error.message, "payloadJson must be valid JSON");
 }
+
+#[test]
+fn get_inbox_message_returns_the_row_and_reports_missing_ids() {
+    let database = Database::in_memory().unwrap();
+    let created = inbox::ingest_inbox_message_in(
+        &database,
+        inbox_input("notice-get", "mention", "详情消息", 1),
+    )
+    .unwrap();
+
+    let loaded = inbox::get_inbox_message_in(
+        &database,
+        IdInput {
+            id: created.id.clone(),
+        },
+    )
+    .expect("the message can be loaded by id");
+    assert_eq!(loaded.id, created.id);
+    assert_eq!(loaded.title, "详情消息");
+    assert_eq!(loaded.source_id, created.source_id);
+
+    let error = inbox::get_inbox_message_in(
+        &database,
+        IdInput {
+            id: "missing".into(),
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.code, CommandErrorCode::NotFound);
+
+    // 空 id 在校验层就被拒绝，不会落到 SQL。
+    let error = inbox::get_inbox_message_in(&database, IdInput { id: "  ".into() }).unwrap_err();
+    assert_eq!(error.code, CommandErrorCode::Validation);
+}
