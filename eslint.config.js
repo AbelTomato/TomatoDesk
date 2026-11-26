@@ -21,6 +21,14 @@ export default tseslint.config(
     rules: {
       ...reactHooks.configs.recommended.rules,
       "react-refresh/only-export-components": ["warn", { allowConstantExport: true }],
+      // Markdown 渲染不产生 innerHTML；出现这个属性说明有人绕过了 sanitize 链路。
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector: "JSXAttribute[name.name='dangerouslySetInnerHTML']",
+          message: "不要使用 dangerouslySetInnerHTML，Markdown 请走 react-markdown + sanitize。",
+        },
+      ],
     },
   },
   {

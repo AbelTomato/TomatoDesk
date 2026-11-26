@@ -196,6 +196,30 @@ export interface ThreadSummary {
 
 export interface ThreadDetail extends ThreadSummary {
   body: string | null;
+  /** 本地缓存的评论；打开详情时先渲染它，再按需刷新。 */
+  comments: ThreadComment[];
+  commentsSyncedAt: string | null;
+}
+
+/** 一条对话评论（PR 与 Issue 共用）。 */
+export interface ThreadComment {
+  id: string;
+  threadId: string;
+  githubId: number;
+  author: string | null;
+  body: string;
+  url: string;
+  createdAt: string;
+  updatedAt: string;
+  syncedAt: string;
+}
+
+/** 刷新结果：拉取失败时退回缓存，`stale` 为 true 并带错误说明。 */
+export interface ThreadComments {
+  comments: ThreadComment[];
+  syncedAt: string | null;
+  stale: boolean;
+  error: string | null;
 }
 
 export interface ThreadPage {
@@ -476,6 +500,12 @@ export async function listRepoThreads(input: ThreadPageInput): Promise<ThreadPag
 export async function getThread(id: string): Promise<ThreadDetail> {
   const mocked = await preview((data) => data.detailFor(id));
   return mocked ?? call("get_thread", { input: { id } });
+}
+
+/** 评论按需拉取：本地够新时后端直接返回缓存，`force` 用于手动刷新。 */
+export async function refreshThreadComments(id: string, force = false): Promise<ThreadComments> {
+  const mocked = await preview((data) => data.commentsFor(id));
+  return mocked ?? call("refresh_thread_comments", { input: { id, force } });
 }
 
 export async function listRepoReleases(repoId: string): Promise<GithubRelease[]> {

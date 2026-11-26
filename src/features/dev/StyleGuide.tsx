@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
+import Markdown from "../../components/markdown/Markdown";
 import {
   Badge,
   Button,
@@ -40,6 +41,58 @@ const typeScale = [
   { label: "text-xl 详情标题", className: "text-xl font-bold tracking-tight" },
 ];
 
+/**
+ * Markdown 走查样例：正常语法 + 四个恶意输入。
+ * 恶意样例在界面上应表现为纯文字、不可点击、不弹窗。
+ */
+const markdownSample = [
+  "## 改动",
+  "",
+  "把列表接口换成键集分页，顺手把计数下沉到 SQL。支持 **粗体**、*斜体*、~~删除线~~ 与 `行内代码`。",
+  "",
+  "- 新增 `list_items_page`，游标格式 `排序值|id`",
+  "- 计数走 `count_items_by_status`",
+  "",
+  "### 待办",
+  "",
+  "- [x] 迁移脚本",
+  "- [ ] 补两千条数据的压测",
+  "",
+  "| 项目 | 改造前 | 改造后 |",
+  "| --- | --- | --- |",
+  "| 首屏条数 | 全部 | 50 |",
+  "| 计数 | 前端聚合 | SQL |",
+  "",
+  "```rust",
+  "let page = repo.page(&query)?;",
+  "```",
+  "",
+  "> 注意：`open` 筛选包含草稿 PR。",
+  "",
+  "<details>",
+  "<summary>展开看验证记录</summary>",
+  "",
+  "两千条数据下首屏只取 50 条，滚动时增量加载。",
+  "",
+  "</details>",
+  "",
+  "参考 [键集分页](https://example.com/keyset)，或直接看 `src/lib/api.ts`。",
+  "",
+  "---",
+  "",
+  "### 恶意样例（应当全部失效）",
+  "",
+  "<script>alert('xss')</script>",
+  "",
+  '<img src="https://avatars.githubusercontent.com/u/1?s=120&v=4" onerror="alert(\'xss\')" alt="onerror 应被剥离">',
+  "",
+  "[危险链接](javascript:alert('xss'))",
+  "",
+  "![危险图片](data:image/svg+xml;base64,PHN2Zy8+)",
+  "",
+  '<iframe src="https://example.com"></iframe>',
+].join("\n");
+
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="border-t border-border py-8 first:border-t-0 first:pt-0">
@@ -52,6 +105,13 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 function StyleGuide() {
   const [tab, setTab] = useState("overview");
   const [activeRow, setActiveRow] = useState("inbox");
+
+  // 方便直接打开 `?styleguide#markdown` 走查某一段。
+  useEffect(() => {
+    const id = window.location.hash.slice(1);
+    if (!id) return;
+    document.getElementById(id)?.scrollIntoView({ block: "start" });
+  }, []);
 
   return (
     <main className="min-h-screen bg-background px-6 py-10 text-foreground">
@@ -208,6 +268,16 @@ function StyleGuide() {
             原生状态沿用其英文小写文案。
           </p>
         </Section>
+
+        <div id="markdown">
+          <Section title="Markdown 正文">
+            <Markdown
+              className="max-w-2xl"
+              source={markdownSample}
+              baseUrl="https://github.com/TencentCloud/Octop/issues/466"
+            />
+          </Section>
+        </div>
 
         <Section title="面板">
           <div className="grid gap-4 sm:grid-cols-2">

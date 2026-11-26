@@ -1,10 +1,18 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button, SectionTitle, StateMark } from "../../components/ui";
-import { getThread, type ThreadDetail } from "../../lib/api";
+import Markdown from "../../components/markdown/Markdown";
+import {
+  getThread,
+  refreshThreadComments,
+  type ThreadComment,
+  type ThreadDetail,
+} from "../../lib/api";
 import { formatDate, formatRelative } from "../../lib/format";
 import { openExternal } from "../../lib/openExternal";
 import { relationLabel, stateLabels, stateTones, threadHeadline } from "./threadMeta";
+
+const COMMENT_PAGE_SIZE = 50;
 
 interface ThreadDetailPageProps {
   threadId: string;
@@ -65,6 +73,48 @@ function ThreadDetailPage({ threadId, repoLabel, onBack }: ThreadDetailPageProps
   useEffect(() => {
     void load();
   }, [load]);
+
+  const [comments, setComments] = useState<ThreadComment[]>([]);
+  const [commentsLoading, setCommentsLoading] = useState(false);
+  const [commentsNotice, setCommentsNotice] = useState<string | null>(null);
+  const [visibleComments, setVisibleComments] = useState(COMMENT_PAGE_SIZE);
+  /** 防止 StrictMode 双执行或连点触发重复请求。 */
+  const commentsRequest = useRef(false);
+
+  const refreshComments = useCallback(
+    async (force: boolean) => {
+      if (!thread || commentsRequest.current) return;
+      commentsRequest.current = true;
+      setCommentsLoading(true);
+      setCommentsNotice(null);
+      try {
+        const result = await refreshThreadComments(thread.id, force);
+        setComments(result.comments);
+        setVisibleComments(COMMENT_PAGE_SIZE);
+        if (result.error) setCommentsNotice(result.error);
+      } catch (loadError) {
+        setCommentsNotice(
+          loadError instanceof Error ? loadError.message : "加载评论失败，请重试。",
+        );
+      } finally {
+        commentsRequest.current = false;
+        setCommentsLoading(false);
+      }
+    },
+    [thread],
+  );
+
+  useEffect(() => {
+    if (!thread) return;
+    setComments(thread.comments);
+    setVisibleComments(COMMENT_PAGE_SIZE);
+    setCommentsNotice(null);
+    if (thread.commentCount === 0) return;
+    // 缓存缺失或条数不足时才回源；时间戳比较在后端做。
+    if (!thread.commentsSyncedAt || thread.comments.length < thread.commentCount) {
+      void refreshComments(false);
+    }
+  }, [thread, refreshComments]);
 
   const relation = thread ? relationLabel(thread) : null;
   const showDiff =
@@ -145,12 +195,90 @@ function ThreadDetailPage({ threadId, repoLabel, onBack }: ThreadDetailPageProps
             <section className="mt-8">
               <SectionTitle>正文</SectionTitle>
               {thread.body?.trim() ? (
-                <p className="mt-3 text-sm leading-7 break-words whitespace-pre-wrap">
-                  {thread.body}
-                </p>
+                <Markdown className="mt-3" source={thread.body} baseUrl={thread.url} />
               ) : (
                 <p className="mt-3 text-sm text-muted-foreground">这条内容没有正文。</p>
               )}
+            </section>
+
+            <section id="comments" className="mt-8">
+              <div className="flex items-baseline justify-between gap-3 border-b border-border pb-2">
+                <h3 className="text-sm font-bold tracking-tight">评论</h3>
+                <div className="flex items-center gap-3 font-mono text-xs text-muted-foreground">
+                  <span>{thread.commentCount} comments</span>
+                  <button
+                    className="transition-colors hover:text-foreground hover:underline"
+                    type="button"
+                    disabled={commentsLoading}
+                    onClick={() => void refreshComments(true)}
+                  >
+                    {commentsLoading ? "刷新中…" : "刷新"}
+                  </button>
+                </div>
+              </div>
+
+              {commentsNotice ? (
+                <div className="callout callout-warning mt-3 px-3 py-2 text-sm">
+                  <p>评论可能不是最新：{commentsNotice}</p>
+                  <button
+                    className="mt-1 text-xs font-medium underline"
+                    type="button"
+                    disabled={commentsLoading}
+                    onClick={() => void refreshComments(true)}
+                  >
+                    重新加载评论
+                  </button>
+                </div>
+              ) : null}
+
+              {commentsLoading && comments.length === 0 ? (
+                <div className="mt-4 space-y-3" role="status" aria-label="正在加载评论">
+                  {Array.from({ length: 3 }).map((_, index) => (
+                    <div key={index} className="space-y-2" aria-hidden>
+                      <div className="h-3 w-32 animate-pulse rounded bg-muted" />
+                      <div className="h-3 w-full animate-pulse rounded bg-muted/70" />
+                      <div className="h-3 w-2/3 animate-pulse rounded bg-muted/60" />
+                    </div>
+                  ))}
+                </div>
+              ) : comments.length === 0 ? (
+                <p className="mt-3 text-sm text-muted-foreground">
+                  {thread.commentCount > 0
+                    ? "评论尚未同步，稍后会自动重试，也可以点「刷新」。"
+                    : "这条内容没有评论。"}
+                </p>
+              ) : (
+                <div className="divide-y divide-border">
+                  {comments.slice(0, visibleComments).map((comment) => (
+                    <article key={comment.id} className="py-4">
+                      <div className="flex flex-wrap items-baseline gap-3 font-mono text-xs text-muted-foreground">
+                        <span className="text-foreground">{comment.author ?? "未知作者"}</span>
+                        <time>{formatRelative(comment.createdAt)}</time>
+                        <button
+                          className="ml-auto transition-colors hover:text-foreground hover:underline"
+                          type="button"
+                          onClick={() => void openExternal(comment.url)}
+                        >
+                          在 GitHub 打开
+                        </button>
+                      </div>
+                      <Markdown className="mt-2" source={comment.body} baseUrl={comment.url} />
+                    </article>
+                  ))}
+                </div>
+              )}
+
+              {comments.length > visibleComments ? (
+                <div className="mt-3 flex justify-center">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setVisibleComments((current) => current + COMMENT_PAGE_SIZE)}
+                  >
+                    加载更多评论
+                  </Button>
+                </div>
+              ) : null}
             </section>
 
             <section className="mt-8">

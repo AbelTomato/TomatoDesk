@@ -12,6 +12,8 @@ import type {
   RepoDetail,
   RepoSummary,
   Tag,
+  ThreadComment,
+  ThreadComments,
   ThreadDetail,
   ThreadPage,
   ThreadPageInput,
@@ -375,15 +377,102 @@ const threads: ThreadSummary[] = [
   },
 ];
 
+const threadCommentBodies: Record<string, string[]> = {
+  "thread-1": [
+    "游标格式建议写成不透明字符串，前端不要解析它。\n\n`排序值|id` 里的 `|` 如果出现在值里会截断，记得转义或改用 base64。",
+    "两千条数据下首屏 50 条够用吗？我这边滚动到底大概要 **6 秒**。\n\n- 可以试试把 `limit` 提到 80\n- 或者先加个骨架屏",
+    "> 计数下沉到 SQL 之后，`count_items_by_status` 一次大概 3ms。\n\n可以接受。",
+    "补了个压测脚本，见 `scripts/bench.mjs`。\n\n```bash\npnpm bench --rows=2000\n```",
+  ],
+  "thread-5": [
+    "确认一下：慢的是首屏请求还是渲染？\n\n如果是渲染，先看列表是不是一次性挂了两千个节点。",
+    "渲染。改成 `divide-y` + 分页之后好多了。",
+    "已合入，等下一个版本验证。",
+  ],
+};
+
+const commentsForThread = (id: string): ThreadComment[] => {
+  const thread = threads.find((entry) => entry.id === id);
+  const bodies = threadCommentBodies[id] ?? [];
+  if (!thread) return [];
+  return bodies.map((body, index) => ({
+    id: `${id}-comment-${index + 1}`,
+    threadId: id,
+    githubId: 1000 + index,
+    author: index % 2 === 0 ? "someone-else" : "AbelTomato",
+    body,
+    url: `${thread.url}#issuecomment-${1000 + index}`,
+    createdAt: minutesAgo(200 - index * 20),
+    updatedAt: minutesAgo(200 - index * 20),
+    syncedAt: minutesAgo(12),
+  }));
+};
+
 const threadDetail = (id: string): ThreadDetail | null => {
   const thread = threads.find((entry) => entry.id === id);
   if (!thread) return null;
+  const comments = commentsForThread(id);
   return {
     ...thread,
+    // 详情里的评论数与样例评论对齐，避免走查时数字和列表对不上。
+    commentCount: comments.length,
+    comments,
+    commentsSyncedAt: comments.length > 0 ? minutesAgo(12) : null,
     body:
       thread.kind === "pull_request"
-        ? "## 改动\n\n- 列表接口改为 `list_items_page`，游标格式 `排序值|id`\n- 计数下沉到 SQL，去掉前端聚合\n- 详情正文按需加载\n\n## 验证\n\n两千条数据下首屏只取 50 条，滚动时增量加载。"
-        : "## 现象\n\nInbox 打开要等两三秒，滚动也发涩。\n\n## 期望\n\n首屏只渲染一页，剩下的滚动加载。",
+        ? [
+            "## 改动",
+            "",
+            "把列表接口换成键集分页，顺手把计数下沉到 SQL。",
+            "",
+            "- 新增 `list_items_page`，游标格式 `排序值|id`",
+            "- 计数走 `count_items_by_status`，不再把全部行拉到 JS 里算",
+            "- 详情正文按需加载",
+            "",
+            "### 关键代码",
+            "",
+            "```rust",
+            "let page = repo.page(&query)?;",
+            "```",
+            "",
+            "| 项目 | 改造前 | 改造后 |",
+            "| --- | --- | --- |",
+            "| 首屏条数 | 全部 | 50 |",
+            "| 计数 | 前端聚合 | SQL |",
+            "",
+            "### 待办",
+            "",
+            "- [x] 迁移脚本",
+            "- [ ] 补两千条数据的压测",
+            "",
+            "> 注意：`open` 筛选包含草稿 PR。",
+            "",
+            "<details>",
+            "<summary>展开看验证记录</summary>",
+            "",
+            "两千条数据下首屏只取 50 条，滚动时增量加载；长列表不再一次性渲染。",
+            "",
+            "</details>",
+            "",
+            "参考 [键集分页](https://example.com/keyset)，或直接看 `src/lib/api.ts`。",
+          ].join("\n")
+        : [
+            "## 现象",
+            "",
+            "Inbox 打开要等两三秒，滚动也发涩。",
+            "",
+            "## 期望",
+            "",
+            "首屏只渲染一页，剩下的滚动加载。",
+            "",
+            "<details>",
+            "<summary>补充信息</summary>",
+            "",
+            "- 数据量约 2000 条",
+            "- 关掉标签筛选后仍然卡",
+            "",
+            "</details>",
+          ].join("\n"),
   };
 };
 
@@ -514,6 +603,16 @@ const bodyFor = (id: string): ItemBody => {
   };
 };
 
+const commentsFor = (id: string): ThreadComments => {
+  const comments = commentsForThread(id);
+  return {
+    comments,
+    syncedAt: comments.length > 0 ? minutesAgo(12) : null,
+    stale: false,
+    error: null,
+  };
+};
+
 const appInfo: AppInfo = { name: "TomatoDesk", version: "0.3.0", environment: "development" };
 const migrationNotice: MigrationNotice = { migratedTo: null, backupPath: null };
 
@@ -534,6 +633,7 @@ export const fixtures = {
   threadsFor,
   bodyFor,
   detailFor: threadDetail,
+  commentsFor,
   search: (query: string) =>
     items.filter((item) =>
       [item.title, item.summary, item.note, item.source]
