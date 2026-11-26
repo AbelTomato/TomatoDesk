@@ -114,6 +114,7 @@ font-family: "JetBrains Mono Variable", "LXGW WenKai", ui-monospace, monospace;
 | `StateMark`     | 2px 竖条 + 小号等宽文字，`tone` 取 `open/merged/closed/neutral`                                                                                                                                     |
 | `Tabs`          | `border-b` + 激活项 2px 蓝色下划线，计数用 `font-mono text-xs`；`trailing` 放右侧补充信息                                                                                                           |
 | `.callout`      | 提示条：中性底 + 左侧 2px 强调条，配 `callout-info/success/warning/error` 改竖线颜色                                                                                                                |
+| `Markdown`      | GitHub 风格正文：组件在 `src/components/markdown/`，排版走 `.markdown`；只用于 PR / Issue 正文与评论，标题与摘要不渲染                                                                              |
 
 ### 为什么提示条用 CSS 类而不是工具类
 
@@ -122,6 +123,33 @@ font-family: "JetBrains Mono Variable", "LXGW WenKai", ui-monospace, monospace;
 - 提示条统一用 `.callout*` 组件类，颜色写在 CSS 里。
 - 组件 base 不写会被变体覆盖的属性（例如 `Button` 的 `border-*` 颜色交给变体）。
 - 调用处不要用 `className` 覆盖组件已有的同属性工具类（如给 `ListItem` 再传 `rounded-none`，改用 `flush`）。
+
+### Markdown 正文
+
+PR / Issue 详情页的正文与评论走 `src/components/markdown/Markdown.tsx`，排版层是 `index.css` 的 `.markdown`。**不引入 `@tailwindcss/typography`**：`prose` 的默认字号阶梯与颜色和本项目的五档字号、中性色板冲突，覆盖成本高于自建。
+
+| 元素      | 配方                                                      |
+| --------- | --------------------------------------------------------- |
+| 正文      | `text-sm`，行高 1.75rem                                   |
+| h1        | 1.125rem 粗体                                             |
+| h2        | 1rem 粗体 + `border-b`                                    |
+| h3        | 0.875rem 粗体                                             |
+| h4–h6     | 0.875rem 中等字重                                         |
+| 行内代码  | `bg-muted` + 等宽 0.75rem                                 |
+| 代码块    | `bg-background` + `border-border`，等宽 0.75rem，横向滚动 |
+| 引用      | 左侧 2px `border` + `muted-foreground`                    |
+| 表格      | 单元格底边线，外层横向滚动                                |
+| 链接      | `--link`，hover 下划线                                    |
+| 图片      | 最大宽度 100%，圆角 + 描边                                |
+| 任务列表  | 只读复选框，`accent-color: --link`                        |
+| `details` | 描边圆角容器，`summary` 用 `muted-foreground`             |
+
+规则：
+
+- 原始 HTML 经 `rehype-raw` 解析后**必须**过 `rehype-sanitize` 白名单；链接只放行 http / https / mailto，图片只放行 https。
+- 外链与锚点一律交给 `openExternal`，不在 WebView 内导航。
+- 标题与摘要不渲染 Markdown：标题要进列表行、面包屑与复制场景，摘要依赖 `line-clamp`。
+- 改 Markdown 样式只改 `.markdown`，不要在页面里给渲染结果补类名。
 
 ## 六、页面结构
 
@@ -191,14 +219,15 @@ font-family: "JetBrains Mono Variable", "LXGW WenKai", ui-monospace, monospace;
 
 `pnpm check:design` 会扫描 `src/`，出现以下写法即失败：
 
-| 禁用                                                                 | 原因                       |
-| -------------------------------------------------------------------- | -------------------------- |
-| `tomato-*`、`ink-*`                                                  | 旧色板 token               |
-| `bg-canvas`、`bg-surface`、`border-line`                             | 旧语义类名                 |
-| `text-white`                                                         | 硬编码白色，暗浅主题不通   |
-| `tracking-[0.18em]`                                                  | 旧眉标字距                 |
-| `bg-{red,green,blue,purple,amber,yellow,emerald,slate}-{50,100,200}` | 彩色填充底                 |
-| `backdrop-blur`（`Panel.tsx` 之外）                                  | 大面积模糊在 WebView2 掉帧 |
+| 禁用                                                                 | 原因                                         |
+| -------------------------------------------------------------------- | -------------------------------------------- |
+| `tomato-*`、`ink-*`                                                  | 旧色板 token                                 |
+| `bg-canvas`、`bg-surface`、`border-line`                             | 旧语义类名                                   |
+| `text-white`                                                         | 硬编码白色，暗浅主题不通                     |
+| `tracking-[0.18em]`                                                  | 旧眉标字距                                   |
+| `bg-{red,green,blue,purple,amber,yellow,emerald,slate}-{50,100,200}` | 彩色填充底                                   |
+| `backdrop-blur`（`Panel.tsx` 之外）                                  | 大面积模糊在 WebView2 掉帧                   |
+| `dangerouslySetInnerHTML`                                            | Markdown 链路不产生 innerHTML，ESLint 已禁止 |
 
 ## 九、与博客的组件对照
 
