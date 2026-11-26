@@ -30,4 +30,6 @@ dist-ssr
 *.key
 *.key.pub
 
+# Agent workspace data (local memory, scratch files)
+.workbuddy/
 .workbuddy-ai/
