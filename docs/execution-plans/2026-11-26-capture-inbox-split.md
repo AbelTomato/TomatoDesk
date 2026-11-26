@@ -733,6 +733,8 @@ pub struct MigrationNotice {
 
 邮件涉及授权码存储、HTML 安全、编码与附件，建议单独排期，不与阶段四合并。
 
+接入方案已单独成文：`docs/execution-plans/2026-11-26-inbox-email-connector.md`（接入位置、数据流、IPC 与事件契约、异常边界、分步实施与验证要点）。核心结论是不需要新迁移，邮件作为 `inbox` 的第二个 provider 接入，支持多账户（上限 5）、授权码登录、已读不回写服务器、不下载附件。
+
 ## 9. 验证方式
 
 ### 9.1 自动化
