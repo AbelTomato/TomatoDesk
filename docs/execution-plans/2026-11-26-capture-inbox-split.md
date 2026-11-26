@@ -676,6 +676,13 @@ pub struct MigrationNotice {
 - 门禁：`cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test --locked`（41/41）；`pnpm test`（6/6）、`pnpm lint`、`pnpm build`、`pnpm check:design`、`pnpm format:check` 全部通过。
 - 待人工复核：真实数据库升级到 v7 后的收件箱空状态与角标、`?preview&view=inbox` 的逐页视觉走查（本轮未截图，环境无可用无头浏览器）、开发窗口里用 ingest 造 3 条消息走一遍「已读 / 忽略 / 转待办」。
 
+接线补记（2026-11-26）：
+
+- 后端接线已补齐：四个 `mod.rs` 的模块声明与导出、`database.rs` 的 0006 / 0007 注册与 `tasks()` / `inbox_sources()` / `inbox_messages()` 访问器、`commands/dto.rs` 的待办与收件箱入参、`lib.rs` 的 15 个 handler（7 待办 + 8 收件箱）。
+- 门禁：`cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test` 37/37；新增用例覆盖待办状态流转与来源唯一索引、收件箱去重与单次转待办、v5 库升级到 v7。
+- 仍未落地：上面两段「落地记录」中的前端部分——`features/tasks`、`features/inbox`、`lib/api.ts` / `lib/events.ts` 调用、`AppShell` 导航与角标、`fixtures.ts` 的收件箱数据，以及 `?preview&view=tasks|inbox` 截图走查。阶段二、阶段三的验收标准在界面侧尚未满足。
+
+
 ### 阶段四：GitHub 通知连接器
 
 范围：`GET /notifications` 拉取、`(source_id, external_id)` 去重、线程关联、已读回写。
