@@ -139,6 +139,54 @@ export interface CreateTagInput {
   color: string | null;
 }
 
+export type TaskStatus = "open" | "done" | "cancelled";
+
+/** 待办字段都是短文本，列表与详情共用同一个投影，没有单列 summary 类型。 */
+export interface Task {
+  id: string;
+  title: string;
+  note: string | null;
+  status: TaskStatus;
+  /** `manual` / `inbox` / `capture`；手动创建为 `manual`。 */
+  originKind: string | null;
+  originId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  /** 完成时间；取消或重开会清空。 */
+  completedAt: string | null;
+}
+
+export interface TaskPage {
+  tasks: Task[];
+  nextCursor: string | null;
+  hasMore: boolean;
+}
+
+export interface TaskPageInput {
+  /** undefined / null 表示全部。 */
+  status?: TaskStatus | null;
+  cursor?: string | null;
+  limit?: number;
+}
+
+export interface TaskCounts {
+  open: number;
+  done: number;
+  cancelled: number;
+  all: number;
+}
+
+export interface CreateTaskInput {
+  title: string;
+  note?: string | null;
+}
+
+export interface UpdateTaskInput {
+  id: string;
+  title: string;
+  note: string | null;
+}
+
 export interface GithubRepo {
   id: string;
   owner: string;
@@ -431,6 +479,41 @@ export function setCaptureTags(captureId: string, tagIds: string[]): Promise<Tag
 export async function getCaptureTags(captureId: string): Promise<Tag[]> {
   const mocked = await preview((data) => data.captureTags[captureId] ?? []);
   return mocked ?? call("get_capture_tags", { input: { captureId } });
+}
+
+export async function createTask(input: CreateTaskInput): Promise<Task> {
+  const mocked = await preview((data) => data.createTask(input));
+  return mocked ?? call("create_task", { input });
+}
+
+export async function listTasksPage(input: TaskPageInput): Promise<TaskPage> {
+  const mocked = await preview((data) => data.tasksPage(input));
+  return mocked ?? call("list_tasks_page", { input });
+}
+
+export async function countTasks(): Promise<TaskCounts> {
+  const mocked = await preview((data) => data.taskCounts());
+  return mocked ?? call("count_tasks");
+}
+
+export async function updateTask(input: UpdateTaskInput): Promise<Task> {
+  const mocked = await preview((data) => data.updateTask(input));
+  return mocked ?? call("update_task", { input });
+}
+
+export async function completeTask(id: string): Promise<Task> {
+  const mocked = await preview((data) => data.setTaskStatus(id, "done"));
+  return mocked ?? call("complete_task", { input: { id } });
+}
+
+export async function cancelTask(id: string): Promise<Task> {
+  const mocked = await preview((data) => data.setTaskStatus(id, "cancelled"));
+  return mocked ?? call("cancel_task", { input: { id } });
+}
+
+export async function reopenTask(id: string): Promise<Task> {
+  const mocked = await preview((data) => data.setTaskStatus(id, "open"));
+  return mocked ?? call("reopen_task", { input: { id } });
 }
 
 export function addGithubRepo(url: string): Promise<GithubRepo> {

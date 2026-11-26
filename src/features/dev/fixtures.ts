@@ -5,6 +5,7 @@ import type {
   CapturePage,
   CapturePageInput,
   CaptureSummary,
+  CreateTaskInput,
   GithubRelease,
   GithubRepo,
   GithubSyncRun,
@@ -12,12 +13,18 @@ import type {
   RepoDetail,
   RepoSummary,
   Tag,
+  Task,
+  TaskCounts,
+  TaskPage,
+  TaskPageInput,
+  TaskStatus,
   ThreadComment,
   ThreadComments,
   ThreadDetail,
   ThreadPage,
   ThreadPageInput,
   ThreadSummary,
+  UpdateTaskInput,
 } from "../../lib/api";
 
 /**
@@ -143,6 +150,123 @@ const captureTags: Record<string, Tag[]> = {
 };
 
 const counts: CaptureCounts = { all: 1284, active: 1214, archived: 70 };
+
+/*
+ * 待办的走查数据是可变的：`?preview` 下新建、完成与重开都直接改这里的数组，
+ * 页面能和真实后端一样走完整个闭环。
+ */
+const nowIso = () => new Date().toISOString();
+
+const tasks: Task[] = [
+  {
+    id: "task-1",
+    title: "给待办页补空状态与键盘走查",
+    note: "三个筛选各自的空状态文案要区分开，别都写「暂无数据」。",
+    status: "open",
+    originKind: "manual",
+    originId: null,
+    createdAt: hoursAgo(8),
+    updatedAt: minutesAgo(35),
+    completedAt: null,
+  },
+  {
+    id: "task-2",
+    title: "把收件箱转成待办时带上摘要与链接",
+    note: "长正文留在收件箱，待办只存摘要与 URL。",
+    status: "open",
+    originKind: "manual",
+    originId: null,
+    createdAt: daysAgo(1),
+    updatedAt: hoursAgo(3),
+    completedAt: null,
+  },
+  {
+    id: "task-3",
+    title: "修掉两千条内容时的首屏卡顿",
+    note: "列表一次性取回全部行，滚动时还要在 JS 里排序。\n\nhttps://github.com/TencentCloud/Octop/issues/466",
+    status: "open",
+    originKind: "inbox",
+    originId: "message-3",
+    createdAt: daysAgo(2),
+    updatedAt: hoursAgo(5),
+    completedAt: null,
+  },
+  {
+    id: "task-4",
+    title: "把待办与收件箱的模块声明补进 mod.rs",
+    note: null,
+    status: "done",
+    originKind: "manual",
+    originId: null,
+    createdAt: daysAgo(3),
+    updatedAt: daysAgo(1),
+    completedAt: daysAgo(1),
+  },
+  {
+    id: "task-5",
+    title: "把完成状态塞回 captures 表",
+    note: "查了两次状态列会让列表和详情互相打架，改回独立表。",
+    status: "cancelled",
+    originKind: "manual",
+    originId: null,
+    createdAt: daysAgo(4),
+    updatedAt: daysAgo(3),
+    completedAt: null,
+  },
+];
+
+const taskCounts = (): TaskCounts => ({
+  open: tasks.filter((task) => task.status === "open").length,
+  done: tasks.filter((task) => task.status === "done").length,
+  cancelled: tasks.filter((task) => task.status === "cancelled").length,
+  all: tasks.length,
+});
+
+const sortTasks = () =>
+  [...tasks].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+
+const tasksPage = (input: TaskPageInput): TaskPage => {
+  const filtered = sortTasks().filter((task) => !input.status || task.status === input.status);
+  return { tasks: filtered, nextCursor: null, hasMore: false };
+};
+
+const findTask = (id: string): Task => {
+  const task = tasks.find((entry) => entry.id === id);
+  if (!task) throw new Error("待办不存在，可能已被删除。");
+  return task;
+};
+
+const createTask = (input: CreateTaskInput): Task => {
+  const created: Task = {
+    id: `task-${Date.now()}`,
+    title: input.title.trim(),
+    note: input.note ?? null,
+    status: "open",
+    originKind: "manual",
+    originId: null,
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+    completedAt: null,
+  };
+  tasks.unshift(created);
+  return created;
+};
+
+const updateTask = (input: UpdateTaskInput): Task => {
+  const task = findTask(input.id);
+  task.title = input.title;
+  task.note = input.note;
+  task.updatedAt = nowIso();
+  return { ...task };
+};
+
+const setTaskStatus = (id: string, status: TaskStatus): Task => {
+  const task = findTask(id);
+  task.status = status;
+  task.updatedAt = nowIso();
+  task.completedAt = status === "done" ? (task.completedAt ?? nowIso()) : null;
+  return { ...task };
+};
 
 const repos: RepoSummary[] = [
   {
@@ -622,6 +746,12 @@ export const fixtures = {
   tags,
   captures,
   captureTags,
+  tasks,
+  taskCounts,
+  tasksPage,
+  createTask,
+  updateTask,
+  setTaskStatus,
   repos,
   repo,
   threads,

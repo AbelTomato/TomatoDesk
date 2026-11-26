@@ -8,22 +8,27 @@ import RepoDetail from "../features/repos/RepoDetail";
 import ReposPage from "../features/repos/ReposPage";
 import SearchPage from "../features/search/SearchPage";
 import SettingsPage from "../features/settings/SettingsPage";
+import TasksPage from "../features/tasks/TasksPage";
 import UpdateBanner from "../features/update/UpdateBanner";
 import {
   countCaptures,
+  countTasks,
   getMigrationNotice,
   openCapture,
   type CaptureCounts,
   type MigrationNotice,
+  type TaskCounts,
 } from "../lib/api";
 import { appEnvironment } from "../lib/env";
-import { onCapturesChanged } from "../lib/events";
+import { onCapturesChanged, onTasksChanged } from "../lib/events";
 
-type View = "captures" | "repos" | "search" | "settings";
+type View = "tasks" | "captures" | "repos" | "search" | "settings";
 
 const emptyCounts: CaptureCounts = { all: 0, active: 0, archived: 0 };
+const emptyTaskCounts: TaskCounts = { open: 0, done: 0, cancelled: 0, all: 0 };
 
 const navItems: Array<{ id: View; label: string }> = [
+  { id: "tasks", label: "待办" },
   { id: "captures", label: "随手记" },
   { id: "repos", label: "仓库" },
   { id: "search", label: "搜索" },
@@ -49,22 +54,24 @@ function AppShell() {
   /** 只作为详情页的初值：真正的开关在 RepoDetail 内部，返回列表时由这里清空。 */
   const [threadId, setThreadId] = useState<string | null>(route.threadId);
   const [counts, setCounts] = useState<CaptureCounts>(emptyCounts);
+  const [taskCounts, setTaskCounts] = useState<TaskCounts>(emptyTaskCounts);
   const [notice, setNotice] = useState<MigrationNotice | null>(null);
   const [noticeDismissed, setNoticeDismissed] = useState(false);
 
+  // 两个角标互不影响：任意一个失败时保留上一次的数字。
   const refreshCounts = useCallback(async () => {
-    try {
-      setCounts(await countCaptures());
-    } catch {
-      // 角标失败不影响主流程，保留上一次的数字。
-    }
+    const [captures, tasks] = await Promise.allSettled([countCaptures(), countTasks()]);
+    if (captures.status === "fulfilled") setCounts(captures.value);
+    if (tasks.status === "fulfilled") setTaskCounts(tasks.value);
   }, []);
 
   useEffect(() => {
     void refreshCounts();
     const stopCaptures = onCapturesChanged(() => void refreshCounts());
+    const stopTasks = onTasksChanged(() => void refreshCounts());
     return () => {
       stopCaptures();
+      stopTasks();
     };
   }, [refreshCounts]);
 
@@ -136,7 +143,9 @@ function AppShell() {
               active={view === item.id}
               aria-current={view === item.id ? "page" : undefined}
               trailing={
-                item.id === "captures" ? (
+                item.id === "tasks" ? (
+                  <span className="font-mono text-xs text-muted-foreground">{taskCounts.open}</span>
+                ) : item.id === "captures" ? (
                   <span className="font-mono text-xs text-muted-foreground">{counts.active}</span>
                 ) : null
               }
@@ -177,6 +186,7 @@ function AppShell() {
         ) : null}
 
         <div className="flex min-h-0 flex-1 flex-col">
+          {view === "tasks" ? <TasksPage /> : null}
           {view === "captures" ? <CapturesPage /> : null}
           {view === "repos" ? (
             repoId ? (
