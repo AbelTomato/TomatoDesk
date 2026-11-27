@@ -1,7 +1,7 @@
 import { Badge, Button } from "../../components/ui";
 import type { InboxMessage, InboxSource } from "../../lib/api";
 import { formatDate, formatRelative } from "../../lib/format";
-import { describeCategory, sourceKindLabels, triageLabels } from "./shared";
+import { describeCategory, isEmailMessage, sourceKindLabels, triageLabels } from "./shared";
 
 interface InboxMessageDetailProps {
   message: InboxMessage | null;
@@ -26,6 +26,9 @@ function InboxMessageDetail({
   onOpenLink,
   onOpenLocal,
 }: InboxMessageDetailProps) {
+  // 邮件没有 GitHub 线程，也不造 mailto 链接，回复交给邮箱客户端。
+  const isEmail = message ? isEmailMessage(source, message.category) : false;
+
   return (
     <section className="min-w-0 overflow-y-auto bg-card px-5 py-6 sm:px-7" aria-label="消息详情">
       {message ? (
@@ -66,7 +69,7 @@ function InboxMessageDetail({
                 </p>
               ) : (
                 <p className="mt-2 text-sm text-muted-foreground">
-                  这条通知没有正文，摘要即全部内容。
+                  {isEmail ? "这封邮件没有可读正文。" : "这条通知没有正文，摘要即全部内容。"}
                 </p>
               )}
             </div>
@@ -80,7 +83,14 @@ function InboxMessageDetail({
               </div>
             ) : null}
 
-            {onOpenLocal || message.url ? (
+            {isEmail ? (
+              <div>
+                <p className="text-xs font-medium text-muted-foreground">相关</p>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                  邮件原文已保存在收件箱，回复请到邮箱客户端。
+                </p>
+              </div>
+            ) : onOpenLocal || message.url ? (
               <div>
                 <p className="text-xs font-medium text-muted-foreground">相关</p>
                 <p className="mt-1 text-xs leading-5 text-muted-foreground">

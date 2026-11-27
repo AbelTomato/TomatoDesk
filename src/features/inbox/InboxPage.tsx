@@ -34,7 +34,13 @@ import { notifyInboxChanged, notifyTasksChanged } from "../../lib/events";
 import { formatRelative } from "../../lib/format";
 import { openExternal } from "../../lib/openExternal";
 import InboxMessageDetail from "./InboxMessageDetail";
-import { categoryOptions, describeCategory, sourceKindLabels, triageLabels } from "./shared";
+import {
+  categoryOptions,
+  describeCategory,
+  latestSyncedAt,
+  sourceKindLabels,
+  triageLabels,
+} from "./shared";
 
 type TriagedFilter = "pending" | "triaged" | "all";
 
@@ -50,7 +56,7 @@ const emptyHints: Record<TriagedFilter, { title: string; hint: string }> = {
   triaged: { title: "还没有判断过的消息", hint: "忽略或转为待办之后，消息会留在这里备查。" },
   all: {
     title: "收件箱是空的",
-    hint: "配置 GitHub Token 后通知会自动同步进来；邮件连接器随后提供。",
+    hint: "配置 GitHub Token 或邮箱账户后，消息会自动同步进来。",
   },
 };
 
@@ -295,7 +301,12 @@ function InboxPage({
   const selectedSource = selectedMessage
     ? (sources.find((source) => source.id === selectedMessage.sourceId) ?? null)
     : null;
-  const githubSource = sources.find((source) => source.kind === "github") ?? null;
+  // 同步时间取所有启用来源里最新的一次，GitHub 与多个邮箱账户共用同一个位置。
+  const lastSyncedAt = latestSyncedAt(sources);
+  const emailSourceCount = sources.filter(
+    (source) => source.kind === "email" && source.enabled,
+  ).length;
+  const failingSources = sources.filter((source) => source.enabled && source.lastError);
 
   /**
    * 点开未读消息即视为读过；失败不打断阅读。
@@ -441,9 +452,9 @@ function InboxPage({
             <span className="font-mono text-xs text-muted-foreground">
               待判断 {counts.pending} · 未读 {counts.unread}
             </span>
-            {githubSource?.lastSyncedAt ? (
+            {lastSyncedAt ? (
               <span className="font-mono text-xs text-muted-foreground">
-                自动同步 · {formatRelative(githubSource.lastSyncedAt)}
+                自动同步 · {formatRelative(lastSyncedAt)}
               </span>
             ) : null}
           </div>
@@ -559,13 +570,23 @@ function InboxPage({
               key={source.id}
               active={sourceId === source.id}
               onClick={() => setSourceId(source.id)}
+              // 邮箱来源用地址当名字，悬停给出完整地址。
+              title={source.name}
               trailing={
-                <span className="font-mono text-xs text-muted-foreground">
-                  {sourceKindLabels[source.kind]}
-                </span>
+                // 地址本身已经说明是邮箱，省下这段宽度让域名完整显示。
+                source.kind === "email" ? null : (
+                  <span className="font-mono text-xs text-muted-foreground">
+                    {sourceKindLabels[source.kind]}
+                  </span>
+                )
               }
             >
-              {source.name}
+              {/* 邮箱来源的 name 就是地址，用等宽小号才放得下完整域名。 */}
+              {source.kind === "email" ? (
+                <span className="font-mono text-xs">{source.name}</span>
+              ) : (
+                source.name
+              )}
             </Row>
           ))}
           <p className="mt-4 px-3 text-xs leading-5 text-muted-foreground">
@@ -573,11 +594,17 @@ function InboxPage({
               ? "GitHub 通知每五分钟自动同步一次，不用手动拉取。"
               : "配置 GitHub Token 后，通知会自动同步进来。"}
           </p>
-          {githubSource?.lastError ? (
-            <p className="mt-2 px-3 text-xs leading-5 text-destructive">
-              上次同步失败：{githubSource.lastError}
+          {emailSourceCount > 0 ? (
+            <p className="mt-2 px-3 text-xs leading-5 text-muted-foreground">
+              {emailSourceCount} 个邮箱每十分钟收一次信，只读最近 14
+              天，不会改变服务器上的已读状态。
             </p>
           ) : null}
+          {failingSources.map((source) => (
+            <p key={source.id} className="mt-2 px-3 text-xs leading-5 text-destructive">
+              {source.name} 同步失败：{source.lastError}
+            </p>
+          ))}
           {readBack && readBack.blocked > 0 ? (
             <p className="mt-2 px-3 text-xs leading-5 text-warning">
               {readBack.blocked} 条已读没能同步给 GitHub，到设置页确认权限后可重试。
