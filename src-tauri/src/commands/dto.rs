@@ -4,9 +4,9 @@ use serde_json::Value;
 use crate::{
     commands::error::{CommandError, CommandResult},
     domain::{
-        CaptureCursor, CaptureKind, CapturePageQuery, CaptureSort, EmailTls, InboxMessageCursor,
-        InboxPageQuery, InboxScope, InboxTab, NewInboxMessage, TaskCursor, TaskPageQuery,
-        TaskStatus, ThreadKind, ThreadQuery, ThreadRelationship, ThreadState,
+        CaptureCursor, CaptureKind, CapturePageQuery, CaptureSort, EmailTls, InboxAction,
+        InboxMessageCursor, InboxPageQuery, InboxScope, InboxTab, NewInboxMessage, TaskCursor,
+        TaskPageQuery, TaskStatus, ThreadKind, ThreadQuery, ThreadRelationship, ThreadState,
     },
 };
 
@@ -30,6 +30,11 @@ const MAX_EMAIL_ADDRESS_LENGTH: usize = 320;
 const MAX_EMAIL_HOST_LENGTH: usize = 253;
 const MAX_EMAIL_PASSWORD_LENGTH: usize = 512;
 const MAX_MAILBOX_LENGTH: usize = 128;
+/// 显式勾选的上限：前端一页 50 条，这里留出余量但不接受无界输入。
+const MAX_ACTION_IDS: usize = 200;
+/// 批量转待办的上限：撤销「转待办」不会删掉待办，误转只能手删，
+/// 所以这条只接受一页以内的显式勾选（见方案 6.5 / 12）。
+const MAX_TASK_ACTION_IDS: usize = 50;
 const DEFAULT_PAGE_SIZE: u32 = 50;
 const MAX_PAGE_SIZE: u32 = 200;
 
@@ -399,6 +404,29 @@ impl ListTasksPageInput {
     }
 }
 
+/// 列表筛选与「选择全部 N 条」共用同一套条件：两处各写一遍会慢慢漂移。
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InboxScopeInput {
+    /// 缺省为 `pending`（待处理）；非法值按校验错误处理，不静默退回「全部」。
+    pub tab: Option<String>,
+    #[serde(default)]
+    pub unread_only: bool,
+    pub category: Option<String>,
+    pub source_id: Option<String>,
+}
+
+impl InboxScopeInput {
+    pub(super) fn into_scope(self) -> CommandResult<InboxScope> {
+        Ok(InboxScope {
+            tab: parse_inbox_tab(self.tab.as_deref())?,
+            unread_only: self.unread_only,
+            category: optional_text("category", self.category, MAX_CATEGORY_LENGTH)?,
+            source_id: optional_text("sourceId", self.source_id, MAX_ID_LENGTH)?,
+        })
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ListInboxMessagesInput {
@@ -420,12 +448,6 @@ impl ListInboxMessagesInput {
                 "limit must be between 1 and {MAX_PAGE_SIZE}"
             )));
         }
-        let tab = match self.tab.as_deref().map(str::trim) {
-            Some(raw) if !raw.is_empty() => raw.parse::<InboxTab>().map_err(|_| {
-                CommandError::validation("tab must be one of pending, task, dismissed, all")
-            })?,
-            _ => InboxTab::Pending,
-        };
         let cursor = match self.cursor.as_deref().map(str::trim) {
             Some(raw) if !raw.is_empty() => {
                 Some(InboxMessageCursor::parse(raw).ok_or_else(|| {
@@ -435,12 +457,13 @@ impl ListInboxMessagesInput {
             _ => None,
         };
         Ok(InboxPageQuery {
-            scope: InboxScope {
-                tab,
+            scope: InboxScopeInput {
+                tab: self.tab,
                 unread_only: self.unread_only,
-                category: optional_text("category", self.category, MAX_CATEGORY_LENGTH)?,
-                source_id: optional_text("sourceId", self.source_id, MAX_ID_LENGTH)?,
-            },
+                category: self.category,
+                source_id: self.source_id,
+            }
+            .into_scope()?,
             cursor,
             limit,
         })
@@ -461,6 +484,122 @@ impl CountInboxMessagesInput {
         self.category = optional_text("category", self.category.take(), MAX_CATEGORY_LENGTH)?;
         Ok(self)
     }
+}
+
+/// 动作目标：要么是显式勾选的 id，要么是「当前筛选的全部 N 条」。
+#[derive(Debug)]
+pub(super) enum InboxActionTarget {
+    Ids(Vec<String>),
+    Scope { scope: InboxScope, expected: i64 },
+}
+
+/// 动作入参。`ids` 与 `scope` 二选一：跨页「选择全部」只在后端解析出 id。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ApplyInboxActionInput {
+    pub action: String,
+    pub ids: Option<Vec<String>>,
+    pub scope: Option<InboxScopeInput>,
+    /// `scope` 模式必填：它既是对账依据，也是「确认 123 执行 137」的守卫。
+    pub expected_count: Option<i64>,
+}
+
+impl ApplyInboxActionInput {
+    pub(super) fn validate(self) -> CommandResult<(InboxAction, InboxActionTarget)> {
+        let action = parse_inbox_action(&self.action)?;
+        match (self.ids, self.scope) {
+            (Some(ids), None) => {
+                let ids = normalize_action_ids(ids)?;
+                if action == InboxAction::Task && ids.len() > MAX_TASK_ACTION_IDS {
+                    return Err(CommandError::validation(format!(
+                        "转待办一次最多 {MAX_TASK_ACTION_IDS} 条，请分批处理"
+                    )));
+                }
+                Ok((action, InboxActionTarget::Ids(ids)))
+            }
+            (None, Some(scope)) => {
+                // 撤销「转待办」只是解绑，待办仍在；误转只能手删，所以不放开跨页全选。
+                if action == InboxAction::Task {
+                    return Err(CommandError::validation(
+                        "转待办只接受勾选的消息，不能对「全部」执行",
+                    ));
+                }
+                let expected = self.expected_count.ok_or_else(|| {
+                    CommandError::validation("expectedCount is required when scope is used")
+                })?;
+                if expected < 0 {
+                    return Err(CommandError::validation("expectedCount cannot be negative"));
+                }
+                Ok((
+                    action,
+                    InboxActionTarget::Scope {
+                        scope: scope.into_scope()?,
+                        expected,
+                    },
+                ))
+            }
+            _ => Err(CommandError::validation(
+                "pass either ids or scope, not both",
+            )),
+        }
+    }
+}
+
+/// 撤销入参：`ids` / `taskIds` 就是上一次动作返回的那两个列表。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UndoInboxActionInput {
+    pub action: String,
+    pub ids: Vec<String>,
+    #[serde(default)]
+    pub task_ids: Vec<String>,
+}
+
+impl UndoInboxActionInput {
+    pub(super) fn validate(self) -> CommandResult<(InboxAction, Vec<String>, Vec<String>)> {
+        let action = parse_inbox_action(&self.action)?;
+        let ids = normalize_action_ids(self.ids)?;
+        let mut task_ids = Vec::with_capacity(self.task_ids.len());
+        for task_id in self.task_ids {
+            task_ids.push(required_text("taskIds entry", task_id, MAX_ID_LENGTH)?);
+        }
+        Ok((action, ids, task_ids))
+    }
+}
+
+fn parse_inbox_tab(raw: Option<&str>) -> CommandResult<InboxTab> {
+    match raw.map(str::trim) {
+        Some(raw) if !raw.is_empty() => raw.parse::<InboxTab>().map_err(|_| {
+            CommandError::validation("tab must be one of pending, task, dismissed, all")
+        }),
+        _ => Ok(InboxTab::Pending),
+    }
+}
+
+fn parse_inbox_action(raw: &str) -> CommandResult<InboxAction> {
+    raw.trim()
+        .parse::<InboxAction>()
+        .map_err(|_| CommandError::validation("action must be one of read, unread, dismiss, task"))
+}
+
+/// 去空白、去重（保持顺序）后逐个校验长度：重复的 id 会让 `skipped` 莫名变大。
+fn normalize_action_ids(ids: Vec<String>) -> CommandResult<Vec<String>> {
+    if ids.len() > MAX_ACTION_IDS {
+        return Err(CommandError::validation(format!(
+            "ids cannot contain more than {MAX_ACTION_IDS} entries"
+        )));
+    }
+    let mut normalized: Vec<String> = Vec::with_capacity(ids.len());
+    for id in ids {
+        let id = required_text("ids entry", id, MAX_ID_LENGTH)?;
+        if !normalized.contains(&id) {
+            normalized.push(id);
+        }
+    }
+    if normalized.is_empty() {
+        return Err(CommandError::validation("ids cannot be empty"));
+    }
+    Ok(normalized)
 }
 
 /// 开发与测试用的入库入参：字段与 `NewInboxMessage` 一一对应，`source_id` 由命令层决定。

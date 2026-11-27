@@ -73,6 +73,8 @@ pub fn run() {
             commands::save_email_account,
             commands::delete_email_account,
             commands::get_inbox_message,
+            commands::apply_inbox_action,
+            commands::undo_inbox_action,
             commands::mark_inbox_message_read,
             commands::mark_inbox_message_unread,
             commands::dismiss_inbox_message,

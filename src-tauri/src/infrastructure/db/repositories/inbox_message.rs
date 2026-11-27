@@ -3,16 +3,13 @@ use uuid::Uuid;
 
 use crate::{
     domain::{
-        InboxCounts, InboxMessage, InboxMessageCursor, InboxPage, InboxPageQuery, InboxScope,
-        InboxTab, NewInboxMessage, NewTask, Task,
+        InboxAction, InboxActionResult, InboxCounts, InboxMessage, InboxMessageCursor, InboxPage,
+        InboxPageQuery, InboxScope, InboxTab, NewInboxMessage, NewTask,
     },
     infrastructure::db::{Database, DbError, DbResult},
 };
 
-use super::{
-    parse_value,
-    task::{get_task, insert_task},
-};
+use super::{parse_value, task::insert_task};
 
 /// 收件箱消息按 `occurred_at` 倒序分页，索引与排序保持一致。
 const MESSAGE_FIELDS: &str = "id, source_id, external_id, category, title, summary, body, url, \
@@ -148,6 +145,7 @@ impl InboxMessageRepository {
         values.push(Value::Integer(i64::from(limit) + 1));
 
         self.database.with_connection(|connection| {
+            let total = count_scope_in(connection, &query.scope)?;
             let mut statement = connection.prepare(&sql)?;
             let rows = statement.query_map(params_from_iter(values.iter()), raw_message)?;
             let mut messages = rows
@@ -174,6 +172,7 @@ impl InboxMessageRepository {
                 messages,
                 next_cursor,
                 has_more,
+                total,
             })
         })
     }
@@ -208,68 +207,67 @@ impl InboxMessageRepository {
         })
     }
 
+    /// 当前筛选下有多少条：`scope` 模式执行前用它和前端确认过的数字比对。
+    pub fn count_scope(&self, scope: &InboxScope) -> DbResult<i64> {
+        self.database
+            .with_connection(|connection| count_scope_in(connection, scope))
+    }
+
+    /// 按 id 批量执行一个动作。整批一个事务：要么全成，要么一条都不改。
+    pub fn apply_action(&self, action: InboxAction, ids: &[String]) -> DbResult<InboxActionResult> {
+        self.database
+            .with_transaction(|transaction| apply_in(transaction, action, ids))
+    }
+
+    /// 「选择全部 N 条」：先数一遍核对，再取 id 执行。两次查询在同一事务内，
+    /// 避免中间插入的新消息让确认的数字与执行的范围错位。
+    pub fn apply_action_scope(
+        &self,
+        action: InboxAction,
+        scope: &InboxScope,
+        expected: i64,
+    ) -> DbResult<InboxActionResult> {
+        self.database.with_transaction(|transaction| {
+            let actual = count_scope_in(transaction, scope)?;
+            if actual != expected {
+                return Ok(InboxActionResult::stale(action, actual));
+            }
+            let ids = resolve_scope_ids_in(transaction, scope)?;
+            apply_in(transaction, action, &ids)
+        })
+    }
+
+    /// 撤销：把动作反向执行一遍。`action` 是当初执行的动作，不是要执行的反向动作。
+    pub fn undo_action(
+        &self,
+        action: InboxAction,
+        ids: &[String],
+        task_ids: &[String],
+    ) -> DbResult<InboxActionResult> {
+        self.database
+            .with_transaction(|transaction| undo_in(transaction, action, ids, task_ids))
+    }
+
     /// 已读 / 未读只改 `read_at`；已判断的消息也可以标记，方便回看。
     pub fn set_read(&self, id: &str, read: bool) -> DbResult<Option<InboxMessage>> {
-        self.database.with_connection(|connection| {
-            let changed = connection.execute(
-                "UPDATE inbox_messages
-                 SET read_at = CASE
-                         WHEN ?2 = 1 THEN COALESCE(read_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-                         ELSE NULL
-                     END
-                 WHERE id = ?1",
-                params![id, i64::from(read)],
-            )?;
-            if changed == 0 {
-                return Ok(None);
-            }
-            get_message(connection, id)
-        })
+        let action = if read {
+            InboxAction::Read
+        } else {
+            InboxAction::Unread
+        };
+        self.apply_action(action, &[id.to_owned()])?;
+        self.get(id)
     }
 
     /// 忽略是软删除：只写判断结果，消息保留用于去重与审计。
-    /// 已经判断过的消息不会被改写，直接返回原状，重复点击是幂等的。
+    /// 已经判断过的消息不会被改写，重复点击是幂等的。
     pub fn dismiss(&self, id: &str) -> DbResult<Option<InboxMessage>> {
-        self.database.with_connection(|connection| {
-            connection.execute(
-                "UPDATE inbox_messages
-                 SET triaged_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-                     triage_outcome = 'dismissed',
-                     triage_ref_id = NULL
-                 WHERE id = ?1 AND triaged_at IS NULL",
-                [id],
-            )?;
-            get_message(connection, id)
-        })
-    }
-
-    /// 转为待办：同一事务内写待办并回填消息的判断结果。
-    ///
-    /// `WHERE triaged_at IS NULL` 是防止重复判断的第一道防线，影响 0 行就回滚整个事务；
-    /// `tasks_inbox_origin_unique` 是第二道防线。
-    pub fn to_task(&self, id: &str, task: NewTask) -> DbResult<Task> {
-        let task_id = Uuid::new_v4().to_string();
-        self.database.with_transaction(|transaction| {
-            let changed = transaction.execute(
-                "UPDATE inbox_messages
-                 SET triaged_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-                     triage_outcome = 'task',
-                     triage_ref_id = ?2
-                 WHERE id = ?1 AND triaged_at IS NULL",
-                params![id, task_id],
-            )?;
-            if changed == 0 {
-                return Err(DbError::InvalidData(
-                    "inbox message is already triaged".into(),
-                ));
-            }
-            insert_task(transaction, &task_id, task)?;
-            get_task(transaction, &task_id)?.ok_or(DbError::NotFound("task"))
-        })
+        self.apply_action(InboxAction::Dismiss, &[id.to_owned()])?;
+        self.get(id)
     }
 }
 
-/// 状态轴的四条判断对应四段 SQL；列表与后续的「选择全部」共用，
+/// 状态轴的四条判断对应四段 SQL；列表与「选择全部」共用，
 /// 避免两处筛选条件各写一遍后慢慢漂移。
 fn push_scope(sql: &mut String, values: &mut Vec<Value>, scope: &InboxScope) {
     match scope.tab {
@@ -304,6 +302,171 @@ fn push_source_filters(
         sql.push_str(" AND source_id = ?");
         values.push(Value::Text(source_id.to_owned()));
     }
+}
+
+/// 「选择全部」一次最多处理的条数：上万条会卡住主线程，也会放大误伤的代价。
+/// 真实积压远小于这个数，够用且可控。
+const MAX_SCOPE_ACTION: i64 = 2000;
+
+/// 执行一个动作的内层实现。调用方保证已经在事务里。
+///
+/// 只统计真正变了行（`changed > 0`）的消息：撤销才不会把用户早就标过已读的
+/// 消息翻回未读。已经处理过或已被别的路径改掉的行只记 `skipped`，不报错。
+fn apply_in(
+    connection: &Connection,
+    action: InboxAction,
+    ids: &[String],
+) -> DbResult<InboxActionResult> {
+    let mut result = InboxActionResult::new(action);
+    for id in ids {
+        match action {
+            InboxAction::Read => {
+                let changed = connection.execute(
+                    "UPDATE inbox_messages
+                     SET read_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                     WHERE id = ?1 AND read_at IS NULL",
+                    [id],
+                )?;
+                record(&mut result, id, changed > 0);
+            }
+            InboxAction::Unread => {
+                let changed = connection.execute(
+                    "UPDATE inbox_messages SET read_at = NULL
+                     WHERE id = ?1 AND read_at IS NOT NULL",
+                    [id],
+                )?;
+                record(&mut result, id, changed > 0);
+            }
+            InboxAction::Dismiss => {
+                let changed = connection.execute(
+                    "UPDATE inbox_messages
+                     SET triaged_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                         triage_outcome = 'dismissed',
+                         triage_ref_id = NULL
+                     WHERE id = ?1 AND triaged_at IS NULL",
+                    [id],
+                )?;
+                record(&mut result, id, changed > 0);
+            }
+            InboxAction::Task => {
+                // 待办标题取消息标题、备注取摘要与链接，所以先读一次消息。
+                let Some(message) = get_message(connection, id)? else {
+                    result.skipped += 1;
+                    continue;
+                };
+                let task_id = Uuid::new_v4().to_string();
+                let changed = connection.execute(
+                    "UPDATE inbox_messages
+                     SET triaged_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                         triage_outcome = 'task',
+                         triage_ref_id = ?2
+                     WHERE id = ?1 AND triaged_at IS NULL",
+                    params![id, task_id],
+                )?;
+                if changed == 0 {
+                    result.skipped += 1;
+                    continue;
+                }
+                insert_task(
+                    connection,
+                    &task_id,
+                    NewTask {
+                        title: message.title.clone(),
+                        note: message.task_note(),
+                        origin_kind: Some("inbox".into()),
+                        origin_id: Some(message.id),
+                    },
+                )?;
+                result.applied_ids.push(id.clone());
+                result.task_ids.push(task_id);
+            }
+        }
+    }
+    Ok(result)
+}
+
+/// 撤销的内层实现：`action` 是当初执行的动作，这里执行它的反向。
+fn undo_in(
+    connection: &Connection,
+    action: InboxAction,
+    ids: &[String],
+    task_ids: &[String],
+) -> DbResult<InboxActionResult> {
+    let mut result = InboxActionResult::new(action);
+    for id in ids {
+        let changed = match action {
+            InboxAction::Read => connection.execute(
+                "UPDATE inbox_messages SET read_at = NULL
+                 WHERE id = ?1 AND read_at IS NOT NULL",
+                [id],
+            )?,
+            InboxAction::Unread => connection.execute(
+                "UPDATE inbox_messages
+                 SET read_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE id = ?1 AND read_at IS NULL",
+                [id],
+            )?,
+            // 清三个字段才算回到待处理；`triage_outcome` 的条件保证只撤销同一种结果。
+            InboxAction::Dismiss => connection.execute(
+                "UPDATE inbox_messages
+                 SET triaged_at = NULL, triage_outcome = NULL, triage_ref_id = NULL
+                 WHERE id = ?1 AND triage_outcome = 'dismissed'",
+                [id],
+            )?,
+            InboxAction::Task => connection.execute(
+                "UPDATE inbox_messages
+                 SET triaged_at = NULL, triage_outcome = NULL, triage_ref_id = NULL
+                 WHERE id = ?1 AND triage_outcome = 'task'",
+                [id],
+            )?,
+        };
+        record(&mut result, id, changed > 0);
+    }
+
+    // 待办保留，只解除与消息的绑定：标题、备注、完成状态都不动，
+    // `origin_id` 置空后局部唯一索引不再拦路，用户可以再次转换。
+    if action == InboxAction::Task {
+        for task_id in task_ids {
+            connection.execute(
+                "UPDATE tasks
+                 SET origin_id = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE id = ?1 AND origin_kind = 'inbox'",
+                [task_id],
+            )?;
+        }
+    }
+    Ok(result)
+}
+
+fn record(result: &mut InboxActionResult, id: &str, changed: bool) {
+    if changed {
+        result.applied_ids.push(id.to_owned());
+    } else {
+        result.skipped += 1;
+    }
+}
+
+fn count_scope_in(connection: &Connection, scope: &InboxScope) -> DbResult<i64> {
+    let mut sql = String::from("SELECT COUNT(*) FROM inbox_messages WHERE 1 = 1");
+    let mut values: Vec<Value> = Vec::new();
+    push_scope(&mut sql, &mut values, scope);
+    connection
+        .query_row(&sql, params_from_iter(values.iter()), |row| row.get(0))
+        .map_err(Into::into)
+}
+
+/// 与列表同样的排序与筛选，「选择全部」处理的就是用户看到的那一批。
+fn resolve_scope_ids_in(connection: &Connection, scope: &InboxScope) -> DbResult<Vec<String>> {
+    let mut sql = String::from("SELECT id FROM inbox_messages WHERE 1 = 1");
+    let mut values: Vec<Value> = Vec::new();
+    push_scope(&mut sql, &mut values, scope);
+    sql.push_str(" ORDER BY occurred_at DESC, id DESC LIMIT ?");
+    values.push(Value::Integer(MAX_SCOPE_ACTION));
+
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement.query_map(params_from_iter(values.iter()), |row| row.get(0))?;
+    rows.collect::<rusqlite::Result<Vec<String>>>()
+        .map_err(Into::into)
 }
 
 fn get_message(connection: &Connection, id: &str) -> DbResult<Option<InboxMessage>> {

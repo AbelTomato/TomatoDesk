@@ -233,6 +233,8 @@ export interface InboxPage {
   messages: InboxMessage[];
   nextCursor: string | null;
   hasMore: boolean;
+  /** 当前筛选下的总条数，只用来给「选择全部 N 条」报数。 */
+  total: number;
 }
 
 export interface InboxPageInput {
@@ -258,6 +260,48 @@ export interface InboxCounts {
   dismissed: number;
   /** 与「只看未读」同一口径：`readAt` 为空，不要求未处理。 */
   unread: number;
+}
+
+/**
+ * 批量动作：单条与批量走同一条命令，撤销就是它的反向。
+ * 不再区分「一键处理」，动作本身才是唯一的入口。
+ */
+export type InboxAction = "read" | "unread" | "dismiss" | "task";
+
+/** 「选择全部 N 条」用的筛选：与列表查询同一套条件，避免两处漂移。 */
+export interface InboxScopeFilter {
+  tab?: InboxTab | null;
+  unreadOnly?: boolean;
+  category?: string | null;
+  sourceId?: string | null;
+}
+
+export interface ApplyInboxActionInput {
+  action: InboxAction;
+  /** 显式勾选的 id；与 `scope` 二选一。 */
+  ids?: string[] | null;
+  /** 跨页「选择全部」时由后端按筛选解析 id。 */
+  scope?: InboxScopeFilter | null;
+  /** `scope` 模式必填：与实际条数不符时不执行，返回值里带实际数字。 */
+  expectedCount?: number | null;
+}
+
+export interface UndoInboxActionInput {
+  /** 当初执行的动作，不是要执行的反向动作。 */
+  action: InboxAction;
+  ids: string[];
+  taskIds?: string[];
+}
+
+export interface InboxActionResult {
+  action: InboxAction;
+  /** 真正被改动的消息：重复点击或已被别处处理的行不会出现在这里。 */
+  appliedIds: string[];
+  /** 转待办生成的待办，撤销时用于解绑。 */
+  taskIds: string[];
+  skipped: number;
+  /** 非 `null` 表示条数与确认时不一致、一条都没改，值是实际条数。 */
+  staleCount: number | null;
 }
 
 /** 后台轮询一轮的结果，作为 `inbox-sync-updated` 事件的载荷；失败时为 `null`。 */
@@ -708,6 +752,18 @@ export async function dismissInboxMessage(id: string): Promise<InboxMessage> {
 export async function convertInboxMessageToTask(id: string): Promise<Task> {
   const mocked = await preview((data) => data.convertInboxMessage(id));
   return mocked ?? call("convert_inbox_message_to_task", { input: { id } });
+}
+
+/** 批量动作：`ids` 与 `scope` 二选一，`scope` 需带 `expectedCount` 对账。 */
+export async function applyInboxAction(input: ApplyInboxActionInput): Promise<InboxActionResult> {
+  const mocked = await preview((data) => data.applyInboxAction(input));
+  return mocked ?? call("apply_inbox_action", { input });
+}
+
+/** 撤销上一次动作：把返回的 `appliedIds` / `taskIds` 原样带回来即可。 */
+export async function undoInboxAction(input: UndoInboxActionInput): Promise<InboxActionResult> {
+  const mocked = await preview((data) => data.undoInboxAction(input));
+  return mocked ?? call("undo_inbox_action", { input });
 }
 
 /** 设置页的邮箱账户列表；已删除的账户会从列表消失，但历史消息仍在收件箱。 */

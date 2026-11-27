@@ -1,4 +1,10 @@
-import type { InboxSource, InboxSourceKind, InboxTab, TriageOutcome } from "../../lib/api";
+import type {
+  InboxAction,
+  InboxSource,
+  InboxSourceKind,
+  InboxTab,
+  TriageOutcome,
+} from "../../lib/api";
 
 const categoryLabels: Record<string, string> = {
   mention: "提及",
@@ -38,6 +44,22 @@ export const triageLabels: Record<TriageOutcome, string> = {
   dismissed: "已忽略",
   task: "已转待办",
   capture: "已转为随手记",
+};
+
+/** 操作条与撤销提示共用同一组动词，避免「忽略 / 已忽略 / 删除」三种叫法。 */
+export const actionLabels: Record<InboxAction, string> = {
+  read: "标为已读",
+  unread: "标为未读",
+  dismiss: "忽略",
+  task: "转为待办",
+};
+
+/** 结果提示用完成态：`已忽略 37 条 · 撤销`。 */
+export const actionDoneLabels: Record<InboxAction, string> = {
+  read: "已标为已读",
+  unread: "已标为未读",
+  dismiss: "已忽略",
+  task: "已转为待办",
 };
 
 /** Tab 顺序即状态轴顺序；「全部」放最后，计数恰好是前三个之和。 */

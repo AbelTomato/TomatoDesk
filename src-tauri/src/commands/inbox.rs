@@ -2,14 +2,18 @@ use tauri::State;
 
 use crate::{
     application,
-    domain::{InboxCounts, InboxMessage, InboxPage, InboxReadBackStatus, InboxSource, Task},
+    domain::{
+        InboxActionResult, InboxCounts, InboxMessage, InboxPage, InboxReadBackStatus, InboxSource,
+        Task,
+    },
     infrastructure::{db::Database, secrets},
 };
 
 use super::{
     dto::{
-        CountInboxMessagesInput, IdInput, IngestInboxMessageInput, ListInboxMessagesInput,
-        parse_input, parse_optional_input,
+        ApplyInboxActionInput, CountInboxMessagesInput, IdInput, InboxActionTarget,
+        IngestInboxMessageInput, ListInboxMessagesInput, UndoInboxActionInput, parse_input,
+        parse_optional_input,
     },
     error::{CommandError, CommandResult},
 };
@@ -51,6 +55,31 @@ pub(super) fn get_inbox_message_in(
         .ok_or_else(|| CommandError::not_found("inbox message"))
 }
 
+/// 批量动作：勾选与「选择全部 N 条」走同一个命令，返回真正改动的 id 供撤销。
+pub(super) fn apply_inbox_action_in(
+    database: &Database,
+    input: ApplyInboxActionInput,
+) -> CommandResult<InboxActionResult> {
+    let (action, target) = input.validate()?;
+    match target {
+        InboxActionTarget::Ids(ids) => application::inbox::apply_action(database, action, &ids),
+        InboxActionTarget::Scope { scope, expected } => {
+            application::inbox::apply_action_scope(database, action, &scope, expected)
+        }
+    }
+    .map_err(Into::into)
+}
+
+/// 撤销：前端把上一次返回的 `appliedIds` / `taskIds` 原样带回来，后端不留会话。
+pub(super) fn undo_inbox_action_in(
+    database: &Database,
+    input: UndoInboxActionInput,
+) -> CommandResult<InboxActionResult> {
+    let (action, ids, task_ids) = input.validate()?;
+    application::inbox::undo_action(database, action, &ids, &task_ids).map_err(Into::into)
+}
+
+/// 详情页的单条动作只是批量动作的一层薄封装。
 fn change_read_in(database: &Database, input: IdInput, read: bool) -> CommandResult<InboxMessage> {
     let input = input.validate()?;
     application::inbox::mark_read(database, &input.id, read)
@@ -152,6 +181,24 @@ pub fn get_inbox_message(
     input: Option<serde_json::Value>,
 ) -> CommandResult<InboxMessage> {
     get_inbox_message_in(&database, parse_input(input)?)
+}
+
+/// 批量动作：`ids` 与 `scope` 二选一，`scope` 需带 `expectedCount` 对账。
+#[tauri::command]
+pub fn apply_inbox_action(
+    database: State<'_, Database>,
+    input: Option<serde_json::Value>,
+) -> CommandResult<InboxActionResult> {
+    apply_inbox_action_in(&database, parse_input(input)?)
+}
+
+/// 撤销上一次动作：8 秒窗口由前端计时，后端只按带回来的 id 反向执行。
+#[tauri::command]
+pub fn undo_inbox_action(
+    database: State<'_, Database>,
+    input: Option<serde_json::Value>,
+) -> CommandResult<InboxActionResult> {
+    undo_inbox_action_in(&database, parse_input(input)?)
 }
 
 /// 已读只写本地并入队，网络动作交给后台回写循环，点已读不会被请求拖住。

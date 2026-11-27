@@ -1,19 +1,65 @@
 //! 收件箱应用服务：入库、已读、忽略与转为待办。
 //!
-//! 判断动作全部是人工触发，收件箱不会自动流入待办或随手记。
-//! 连接器只负责入库，不碰判断结果。
+//! 处理动作全部是人工触发，收件箱不会自动流入待办或随手记。
+//! 连接器只负责入库，不碰处理结果。
 
 pub(crate) mod email;
 pub(crate) mod github;
 
 use crate::{
-    domain::{InboxMessage, NewInboxMessage, NewTask, Task, TriageOutcome},
+    domain::{
+        InboxAction, InboxActionResult, InboxMessage, InboxScope, NewInboxMessage, Task,
+        TriageOutcome,
+    },
     infrastructure::db::{Database, DbError, DbResult},
 };
 
 /// 入库前先保证来源存在；开发用 ingest 固定复用 `source-manual`。
 pub(crate) fn ingest(database: &Database, message: NewInboxMessage) -> DbResult<InboxMessage> {
     database.inbox_messages().ingest(message)
+}
+
+/// 按 id 批量执行一个动作，单条与批量走同一条路径。
+///
+/// 本地写入先提交，已读回写再入队：队列失败不回滚已读，与点一条时的行为一致。
+pub(crate) fn apply_action(
+    database: &Database,
+    action: InboxAction,
+    ids: &[String],
+) -> DbResult<InboxActionResult> {
+    let result = database.inbox_messages().apply_action(action, ids)?;
+    sync_read_back(database, action, &result.applied_ids)?;
+    Ok(result)
+}
+
+/// 「选择全部 N 条」：条数与确认时不一致时返回 `stale_count`，一条都不改。
+pub(crate) fn apply_action_scope(
+    database: &Database,
+    action: InboxAction,
+    scope: &InboxScope,
+    expected: i64,
+) -> DbResult<InboxActionResult> {
+    let result = database
+        .inbox_messages()
+        .apply_action_scope(action, scope, expected)?;
+    sync_read_back(database, action, &result.applied_ids)?;
+    Ok(result)
+}
+
+/// 撤销一次动作：`action` 是当初执行的动作，由前端随 `applied_ids` 带回来。
+pub(crate) fn undo_action(
+    database: &Database,
+    action: InboxAction,
+    ids: &[String],
+    task_ids: &[String],
+) -> DbResult<InboxActionResult> {
+    let result = database
+        .inbox_messages()
+        .undo_action(action, ids, task_ids)?;
+    if let Some(reversed) = action.reversed() {
+        sync_read_back(database, reversed, &result.applied_ids)?;
+    }
+    Ok(result)
 }
 
 /// 改已读状态。本地写入是唯一的事实来源，远端同步交给回写队列：
@@ -23,26 +69,25 @@ pub(crate) fn mark_read(
     id: &str,
     read: bool,
 ) -> DbResult<Option<InboxMessage>> {
-    let message = database.inbox_messages().set_read(id, read)?;
-    if let Some(message) = &message {
-        if read {
-            github::enqueue_read_back(database, message)?;
-        } else {
-            github::cancel_read_back(database, &message.id)?;
-        }
-    }
-    Ok(message)
+    let action = if read {
+        InboxAction::Read
+    } else {
+        InboxAction::Unread
+    };
+    apply_action(database, action, &[id.to_owned()])?;
+    database.inbox_messages().get(id)
 }
 
 /// 忽略：软删除，重复点击幂等。
 pub(crate) fn dismiss(database: &Database, id: &str) -> DbResult<Option<InboxMessage>> {
-    database.inbox_messages().dismiss(id)
+    apply_action(database, InboxAction::Dismiss, &[id.to_owned()])?;
+    database.inbox_messages().get(id)
 }
 
 /// 转为待办。
 ///
 /// 已经转过的消息直接返回原来那条待办，重复点击不会生成第二条；
-/// 已经忽略或已提取为随手记的消息不再转换，避免判断结果被覆盖。
+/// 已经忽略或已提取为随手记的消息不再转换，避免处理结果被覆盖。
 pub(crate) fn to_task(database: &Database, id: &str) -> DbResult<Task> {
     let message = database
         .inbox_messages()
@@ -61,79 +106,37 @@ pub(crate) fn to_task(database: &Database, id: &str) -> DbResult<Task> {
         ));
     }
 
-    database.inbox_messages().to_task(
-        &message.id,
-        NewTask {
-            title: message.title.clone(),
-            note: task_note(&message),
-            origin_kind: Some("inbox".into()),
-            origin_id: Some(message.id.clone()),
-        },
-    )
+    let result = apply_action(
+        database,
+        InboxAction::Task,
+        std::slice::from_ref(&message.id),
+    )?;
+    let task_id = result
+        .task_ids
+        .first()
+        .ok_or_else(|| DbError::InvalidData("inbox message is already triaged".into()))?;
+    database
+        .tasks()
+        .get(task_id)?
+        .ok_or(DbError::NotFound("task"))
 }
 
-/// 待办备注取摘要与 URL：长正文留在收件箱，需要时回到原消息查看。
-fn task_note(message: &InboxMessage) -> Option<String> {
-    let summary = message
-        .summary
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let url = message
-        .url
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-
-    match (summary, url) {
-        (Some(summary), Some(url)) => Some(format!("{summary}\n\n{url}")),
-        (Some(summary), None) => Some(summary.to_owned()),
-        (None, Some(url)) => Some(url.to_owned()),
-        (None, None) => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::task_note;
-    use crate::domain::InboxMessage;
-
-    fn message(summary: Option<&str>, url: Option<&str>) -> InboxMessage {
-        InboxMessage {
-            id: "message".into(),
-            source_id: "source".into(),
-            external_id: "external".into(),
-            category: "mention".into(),
-            title: "标题".into(),
-            summary: summary.map(ToOwned::to_owned),
-            body: None,
-            url: url.map(ToOwned::to_owned),
-            actor: None,
-            occurred_at: "2026-11-26T00:00:00.000Z".into(),
-            read_at: None,
-            triaged_at: None,
-            triage_outcome: None,
-            triage_ref_id: None,
-            related_kind: None,
-            related_id: None,
+/// 只对真正变了的消息动队列：`read` 入队，`unread` 撤销还没写出去的意图。
+fn sync_read_back(database: &Database, action: InboxAction, ids: &[String]) -> DbResult<()> {
+    match action {
+        InboxAction::Read => {
+            for id in ids {
+                if let Some(message) = database.inbox_messages().get(id)? {
+                    github::enqueue_read_back(database, &message)?;
+                }
+            }
         }
+        InboxAction::Unread => {
+            for id in ids {
+                github::cancel_read_back(database, id)?;
+            }
+        }
+        InboxAction::Dismiss | InboxAction::Task => {}
     }
-
-    #[test]
-    fn task_notes_keep_summary_and_url_but_skip_blank_fields() {
-        assert_eq!(
-            task_note(&message(Some(" 摘要 "), Some("https://example.com"))).as_deref(),
-            Some("摘要\n\nhttps://example.com")
-        );
-        assert_eq!(
-            task_note(&message(Some("摘要"), None)).as_deref(),
-            Some("摘要")
-        );
-        assert_eq!(
-            task_note(&message(None, Some("https://example.com"))).as_deref(),
-            Some("https://example.com")
-        );
-        assert_eq!(task_note(&message(Some("   "), None)), None);
-        assert_eq!(task_note(&message(None, None)), None);
-    }
+    Ok(())
 }

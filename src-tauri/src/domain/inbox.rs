@@ -149,6 +149,55 @@ impl FromStr for TriageOutcome {
     }
 }
 
+/// 批量动作。单条与批量走同一条路径，撤销是这个动作的反向。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InboxAction {
+    /// 标为已读
+    Read,
+    /// 标为未读
+    Unread,
+    /// 忽略
+    Dismiss,
+    /// 转为待办
+    Task,
+}
+
+impl InboxAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Unread => "unread",
+            Self::Dismiss => "dismiss",
+            Self::Task => "task",
+        }
+    }
+
+    /// 撤销这个动作要执行的动作。忽略与转待办靠清字段回到待处理，没有对应的反向动作；
+    /// 未读与已读互为反向，撤销时也要把已读回写队列跟着改回来。
+    pub fn reversed(self) -> Option<Self> {
+        match self {
+            Self::Read => Some(Self::Unread),
+            Self::Unread => Some(Self::Read),
+            Self::Dismiss | Self::Task => None,
+        }
+    }
+}
+
+impl FromStr for InboxAction {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "read" => Ok(Self::Read),
+            "unread" => Ok(Self::Unread),
+            "dismiss" => Ok(Self::Dismiss),
+            "task" => Ok(Self::Task),
+            _ => Err(format!("unknown inbox action: {value}")),
+        }
+    }
+}
+
 /// 一条收件箱消息：原文不可编辑，用户只能改已读与判断结果。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -173,6 +222,29 @@ pub struct InboxMessage {
     pub triage_ref_id: Option<String>,
     pub related_kind: Option<String>,
     pub related_id: Option<String>,
+}
+
+impl InboxMessage {
+    /// 待办备注取摘要与链接：长正文留在收件箱，需要时回到原消息查看。
+    pub fn task_note(&self) -> Option<String> {
+        let summary = self
+            .summary
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let url = self
+            .url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+
+        match (summary, url) {
+            (Some(summary), Some(url)) => Some(format!("{summary}\n\n{url}")),
+            (Some(summary), None) => Some(summary.to_owned()),
+            (None, Some(url)) => Some(url.to_owned()),
+            (None, None) => None,
+        }
+    }
 }
 
 /// 收件箱的状态轴。四个 Tab 互斥且穷尽，结果直接成为 Tab，不再用减法凑数。
@@ -241,6 +313,8 @@ pub struct InboxPage {
     pub messages: Vec<InboxMessage>,
     pub next_cursor: Option<String>,
     pub has_more: bool,
+    /// 当前筛选下的总条数（不含游标）：只用来给「选择全部 N 条」报数。
+    pub total: i64,
 }
 
 /// 一次查询给出五个数：导航角标只取 `pending`，四个 Tab 各取自己的一项。
@@ -256,6 +330,43 @@ pub struct InboxCounts {
     pub dismissed: i64,
     /// 与「只看未读」筛选同一口径：`read_at IS NULL`，不再要求未处理。
     pub unread: i64,
+}
+
+/// 一次动作的结果。撤销由前端把 `applied_ids` / `task_ids` 原样带回来，
+/// 后端不需要 session，也不需要持久化的撤销表。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InboxActionResult {
+    pub action: InboxAction,
+    /// 真正被改动的消息：已经是目标状态的行不算，撤销时才不会把它们翻回去。
+    pub applied_ids: Vec<String>,
+    /// 转待办生成或关联的待办 id，撤销「已转待办」时用它解绑。
+    pub task_ids: Vec<String>,
+    /// 状态已经变了（或在确认期间被别的路径处理）而跳过的条数。
+    pub skipped: i64,
+    /// 「选择全部」的条数与确认时不一致时给出实际条数，此时一条都不改；
+    /// `None` 表示数量对得上，动作已经执行。
+    pub stale_count: Option<i64>,
+}
+
+impl InboxActionResult {
+    pub fn new(action: InboxAction) -> Self {
+        Self {
+            action,
+            applied_ids: Vec::new(),
+            task_ids: Vec::new(),
+            skipped: 0,
+            stale_count: None,
+        }
+    }
+
+    /// 数量对不上：不改任何一行，把实际条数交回前端重新确认。
+    pub fn stale(action: InboxAction, count: i64) -> Self {
+        Self {
+            stale_count: Some(count),
+            ..Self::new(action)
+        }
+    }
 }
 
 /// 入库入参：连接器与开发用 ingest 共用，去重键是 `(source_id, external_id)`。
@@ -366,4 +477,52 @@ pub struct InboxReadBackStatus {
     pub pending: i64,
     pub blocked: i64,
     pub last_error: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::InboxMessage;
+
+    fn message(summary: Option<&str>, url: Option<&str>) -> InboxMessage {
+        InboxMessage {
+            id: "message".into(),
+            source_id: "source".into(),
+            external_id: "external".into(),
+            category: "mention".into(),
+            title: "标题".into(),
+            summary: summary.map(ToOwned::to_owned),
+            body: None,
+            url: url.map(ToOwned::to_owned),
+            actor: None,
+            occurred_at: "2026-11-26T00:00:00.000Z".into(),
+            read_at: None,
+            triaged_at: None,
+            triage_outcome: None,
+            triage_ref_id: None,
+            related_kind: None,
+            related_id: None,
+        }
+    }
+
+    #[test]
+    fn task_notes_keep_summary_and_url_but_skip_blank_fields() {
+        assert_eq!(
+            message(Some(" 摘要 "), Some("https://example.com"))
+                .task_note()
+                .as_deref(),
+            Some("摘要\n\nhttps://example.com")
+        );
+        assert_eq!(
+            message(Some("摘要"), None).task_note().as_deref(),
+            Some("摘要")
+        );
+        assert_eq!(
+            message(None, Some("https://example.com"))
+                .task_note()
+                .as_deref(),
+            Some("https://example.com")
+        );
+        assert_eq!(message(Some("   "), None).task_note(), None);
+        assert_eq!(message(None, None).task_note(), None);
+    }
 }

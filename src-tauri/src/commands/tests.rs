@@ -4,10 +4,11 @@ use crate::{
     commands::{
         captures,
         dto::{
-            CountCapturesInput, CountInboxMessagesInput, CreateCaptureInput, CreateTagInput,
-            CreateTaskInput, IdInput, IngestInboxMessageInput, ListCapturesPageInput,
-            ListInboxMessagesInput, ListRepoThreadsInput, ListTasksPageInput, SearchCapturesInput,
-            SetCaptureTagsInput, UpdateCaptureInput, UpdateRepoMetaInput, UpdateTaskInput,
+            ApplyInboxActionInput, CountCapturesInput, CountInboxMessagesInput, CreateCaptureInput,
+            CreateTagInput, CreateTaskInput, IdInput, InboxScopeInput, IngestInboxMessageInput,
+            ListCapturesPageInput, ListInboxMessagesInput, ListRepoThreadsInput,
+            ListTasksPageInput, SearchCapturesInput, SetCaptureTagsInput, UndoInboxActionInput,
+            UpdateCaptureInput, UpdateRepoMetaInput, UpdateTaskInput,
         },
         error::CommandErrorCode,
         inbox, repos, tags, tasks,
@@ -1051,4 +1052,181 @@ fn marking_a_notification_read_enqueues_the_write_back_and_unread_cancels_it() {
             .pending,
         0
     );
+}
+
+fn pending_scope() -> InboxScopeInput {
+    InboxScopeInput {
+        tab: Some("pending".into()),
+        unread_only: false,
+        category: None,
+        source_id: None,
+    }
+}
+
+#[test]
+fn inbox_actions_apply_in_bulk_and_undo_through_the_command_layer() {
+    let database = Database::in_memory().unwrap();
+    let mut ids = Vec::new();
+    for index in 0..3u32 {
+        ids.push(
+            inbox::ingest_inbox_message_in(
+                &database,
+                inbox_input(
+                    &format!("bulk-{index}"),
+                    "mention",
+                    &format!("批量 {index}"),
+                    index,
+                ),
+            )
+            .unwrap()
+            .id,
+        );
+    }
+
+    let dismissed = inbox::apply_inbox_action_in(
+        &database,
+        ApplyInboxActionInput {
+            action: "dismiss".into(),
+            ids: Some(vec![ids[0].clone(), ids[1].clone(), ids[0].clone()]),
+            scope: None,
+            expected_count: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        dismissed.applied_ids,
+        vec![ids[0].clone(), ids[1].clone()],
+        "duplicate ids are collapsed and each message is applied once"
+    );
+    assert_eq!(dismissed.skipped, 0);
+    assert_eq!(
+        inbox::count_inbox_messages_in(&database, CountInboxMessagesInput::default())
+            .unwrap()
+            .pending,
+        1
+    );
+
+    let undone = inbox::undo_inbox_action_in(
+        &database,
+        UndoInboxActionInput {
+            action: "dismiss".into(),
+            ids: dismissed.applied_ids.clone(),
+            task_ids: Vec::new(),
+        },
+    )
+    .unwrap();
+    assert_eq!(undone.applied_ids.len(), 2);
+    assert_eq!(
+        inbox::count_inbox_messages_in(&database, CountInboxMessagesInput::default())
+            .unwrap()
+            .pending,
+        3,
+        "undo puts the counts back where they started"
+    );
+
+    // 跨页「选择全部」：条数对不上先报实际数字，对得上才执行。
+    let stale = inbox::apply_inbox_action_in(
+        &database,
+        ApplyInboxActionInput {
+            action: "read".into(),
+            ids: None,
+            scope: Some(pending_scope()),
+            expected_count: Some(1),
+        },
+    )
+    .unwrap();
+    assert_eq!(stale.stale_count, Some(3));
+    assert!(stale.applied_ids.is_empty());
+
+    let applied = inbox::apply_inbox_action_in(
+        &database,
+        ApplyInboxActionInput {
+            action: "read".into(),
+            ids: None,
+            scope: Some(pending_scope()),
+            expected_count: Some(3),
+        },
+    )
+    .unwrap();
+    assert_eq!(applied.applied_ids.len(), 3);
+    assert_eq!(
+        inbox::count_inbox_messages_in(&database, CountInboxMessagesInput::default())
+            .unwrap()
+            .unread,
+        0
+    );
+}
+
+#[test]
+fn inbox_action_inputs_reject_ambiguous_or_unbounded_targets() {
+    let both = ApplyInboxActionInput {
+        action: "read".into(),
+        ids: Some(vec!["message".into()]),
+        scope: Some(pending_scope()),
+        expected_count: None,
+    }
+    .validate()
+    .unwrap_err();
+    assert_eq!(both.code, CommandErrorCode::Validation);
+
+    let neither = ApplyInboxActionInput {
+        action: "read".into(),
+        ids: None,
+        scope: None,
+        expected_count: None,
+    }
+    .validate()
+    .unwrap_err();
+    assert_eq!(neither.code, CommandErrorCode::Validation);
+
+    let blank = ApplyInboxActionInput {
+        action: "read".into(),
+        ids: Some(vec!["  ".into()]),
+        scope: None,
+        expected_count: None,
+    }
+    .validate()
+    .unwrap_err();
+    assert_eq!(blank.message, "ids entry cannot be empty");
+
+    let unknown = ApplyInboxActionInput {
+        action: "archive".into(),
+        ids: Some(vec!["message".into()]),
+        scope: None,
+        expected_count: None,
+    }
+    .validate()
+    .unwrap_err();
+    assert_eq!(unknown.code, CommandErrorCode::Validation);
+
+    // 转待办只用勾选的 id，不接受跨页全选：撤销它只是解绑，待办会留下。
+    let task_scope = ApplyInboxActionInput {
+        action: "task".into(),
+        ids: None,
+        scope: Some(pending_scope()),
+        expected_count: Some(3),
+    }
+    .validate()
+    .unwrap_err();
+    assert_eq!(task_scope.code, CommandErrorCode::Validation);
+
+    let missing_expected = ApplyInboxActionInput {
+        action: "dismiss".into(),
+        ids: None,
+        scope: Some(pending_scope()),
+        expected_count: None,
+    }
+    .validate()
+    .unwrap_err();
+    assert_eq!(missing_expected.code, CommandErrorCode::Validation);
+
+    let too_many = ApplyInboxActionInput {
+        action: "task".into(),
+        ids: Some((0..51).map(|index| format!("message-{index}")).collect()),
+        scope: None,
+        expected_count: None,
+    }
+    .validate()
+    .unwrap_err();
+    assert_eq!(too_many.code, CommandErrorCode::Validation);
 }

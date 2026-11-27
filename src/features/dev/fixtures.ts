@@ -1,5 +1,6 @@
 import type {
   AppInfo,
+  ApplyInboxActionInput,
   CaptureBody,
   CaptureCounts,
   CapturePage,
@@ -12,6 +13,7 @@ import type {
   GithubRelease,
   GithubRepo,
   GithubSyncRun,
+  InboxActionResult,
   InboxCountFilter,
   InboxCounts,
   InboxMessage,
@@ -35,6 +37,7 @@ import type {
   ThreadPage,
   ThreadPageInput,
   ThreadSummary,
+  UndoInboxActionInput,
   UpdateTaskInput,
 } from "../../lib/api";
 
@@ -494,7 +497,104 @@ const inboxPage = (input: InboxPageInput): InboxPage => {
     .filter((message) => !input.unreadOnly || !message.readAt)
     .filter((message) => !input.category || message.category === input.category)
     .filter((message) => !input.sourceId || message.sourceId === input.sourceId);
-  return { messages: filtered, nextCursor: null, hasMore: false };
+  return { messages: filtered, nextCursor: null, hasMore: false, total: filtered.length };
+};
+
+/** 与后端 `apply_in` 同口径：只统计真正变了的行，已处理过的只算 `skipped`。 */
+const applyInboxAction = (input: ApplyInboxActionInput): InboxActionResult => {
+  const scope = input.scope;
+  const ids =
+    input.ids ??
+    messages
+      .filter((message) => matchesTab(message, scope?.tab ?? "pending"))
+      .filter((message) => !scope?.unreadOnly || !message.readAt)
+      .filter((message) => !scope?.category || message.category === scope.category)
+      .filter((message) => !scope?.sourceId || message.sourceId === scope.sourceId)
+      .map((message) => message.id);
+
+  if (input.scope && input.expectedCount != null && ids.length !== input.expectedCount) {
+    return {
+      action: input.action,
+      appliedIds: [],
+      taskIds: [],
+      skipped: 0,
+      staleCount: ids.length,
+    };
+  }
+
+  const result: InboxActionResult = {
+    action: input.action,
+    appliedIds: [],
+    taskIds: [],
+    skipped: 0,
+    staleCount: null,
+  };
+  for (const id of [...new Set(ids)]) {
+    const message = messages.find((entry) => entry.id === id);
+    if (!message) {
+      result.skipped += 1;
+      continue;
+    }
+    if (input.action === "read" && !message.readAt) {
+      message.readAt = nowIso();
+    } else if (input.action === "unread" && message.readAt) {
+      message.readAt = null;
+    } else if (input.action === "dismiss" && !message.triagedAt) {
+      message.triagedAt = nowIso();
+      message.triageOutcome = "dismissed";
+      message.triageRefId = null;
+    } else if (input.action === "task" && !message.triagedAt) {
+      const created = convertInboxMessage(message.id);
+      result.appliedIds.push(id);
+      result.taskIds.push(created.id);
+      continue;
+    } else {
+      result.skipped += 1;
+      continue;
+    }
+    result.appliedIds.push(id);
+  }
+  return result;
+};
+
+const undoInboxAction = (input: UndoInboxActionInput): InboxActionResult => {
+  const result: InboxActionResult = {
+    action: input.action,
+    appliedIds: [],
+    taskIds: [],
+    skipped: 0,
+    staleCount: null,
+  };
+  for (const id of input.ids) {
+    const message = messages.find((entry) => entry.id === id);
+    if (!message) {
+      result.skipped += 1;
+      continue;
+    }
+    if (input.action === "read" && message.readAt) {
+      message.readAt = null;
+    } else if (input.action === "unread" && !message.readAt) {
+      message.readAt = nowIso();
+    } else if (input.action === "dismiss" && message.triageOutcome === "dismissed") {
+      message.triagedAt = null;
+      message.triageOutcome = null;
+      message.triageRefId = null;
+    } else if (input.action === "task" && message.triageOutcome === "task") {
+      message.triagedAt = null;
+      message.triageOutcome = null;
+      message.triageRefId = null;
+    } else {
+      result.skipped += 1;
+      continue;
+    }
+    result.appliedIds.push(id);
+  }
+  // 待办保留，只解除绑定，与后端一致。
+  for (const taskId of input.taskIds ?? []) {
+    const task = tasks.find((entry) => entry.id === taskId);
+    if (task?.originKind === "inbox") task.originId = null;
+  }
+  return result;
 };
 
 const findMessage = (id: string): InboxMessage => {
@@ -1134,6 +1234,8 @@ export const fixtures = {
   deleteEmailAccount,
   inboxCounts,
   inboxPage,
+  applyInboxAction,
+  undoInboxAction,
   markInboxRead,
   dismissInboxMessage,
   convertInboxMessage,

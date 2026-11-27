@@ -1,8 +1,8 @@
 use super::{Database, MANUAL_SOURCE_ID};
 use crate::domain::{
     CaptureKind, CapturePageQuery, CaptureSort, CaptureSummary, EmailTls, GithubRelease,
-    GithubThread, GithubThreadComment, InboxPageQuery, InboxScope, InboxSourceKind, InboxTab,
-    KeysetCursor, NewCapture, NewInboxMessage, NewSyncRun, NewTask, ReadBackErrorKind,
+    GithubThread, GithubThreadComment, InboxAction, InboxPageQuery, InboxScope, InboxSourceKind,
+    InboxTab, KeysetCursor, NewCapture, NewInboxMessage, NewSyncRun, NewTask, ReadBackErrorKind,
     SyncRunStatus, TaskPageQuery, TaskStatus, ThreadKind, ThreadQuery, ThreadRelationship,
     ThreadState, ThreadSummary, TriageOutcome,
 };
@@ -778,6 +778,11 @@ fn task_origin_index_allows_only_one_task_per_inbox_message() {
     );
 }
 
+/// 单条动作的入参：写成 `&[id.clone()]` 会被 clippy 判成多余的克隆。
+fn only(id: &str) -> Vec<String> {
+    vec![id.to_owned()]
+}
+
 fn inbox_message(external_id: &str, title: &str, updated_at: &str) -> NewInboxMessage {
     NewInboxMessage {
         source_id: MANUAL_SOURCE_ID.into(),
@@ -840,16 +845,12 @@ fn inbox_repository_dedupes_messages_and_converts_once() {
     );
 
     let task = messages
-        .to_task(
-            &updated.id,
-            NewTask {
-                title: updated.title.clone(),
-                note: Some("摘要".into()),
-                origin_kind: Some("inbox".into()),
-                origin_id: Some(updated.id.clone()),
-            },
-        )
-        .unwrap();
+        .apply_action(InboxAction::Task, &only(&updated.id))
+        .unwrap()
+        .task_ids
+        .pop()
+        .expect("conversion returns the created task id");
+    let task = db.tasks().get(&task).unwrap().unwrap();
     assert_eq!(task.origin_id.as_deref(), Some(updated.id.as_str()));
 
     let triaged = messages.get(&updated.id).unwrap().unwrap();
@@ -860,24 +861,17 @@ fn inbox_repository_dedupes_messages_and_converts_once() {
         "triage keeps read state"
     );
 
+    let repeat = messages
+        .apply_action(InboxAction::Task, &only(&updated.id))
+        .unwrap();
     assert!(
-        messages
-            .to_task(
-                &updated.id,
-                NewTask {
-                    title: "重复转换".into(),
-                    note: None,
-                    origin_kind: Some("inbox".into()),
-                    origin_id: Some(updated.id.clone()),
-                },
-            )
-            .is_err(),
-        "a second conversion rolls back instead of creating another task"
+        repeat.applied_ids.is_empty() && repeat.task_ids.is_empty() && repeat.skipped == 1,
+        "a second conversion is skipped instead of creating another task"
     );
     assert_eq!(
         db.tasks().counts().unwrap().all,
         1,
-        "only one task exists after a rejected conversion"
+        "only one task exists after a repeated conversion"
     );
 
     let dismissed = messages
@@ -942,15 +936,7 @@ fn inbox_scope_splits_the_tabs_and_counts_add_up() {
 
     messages.dismiss(&dismissed.id).unwrap();
     messages
-        .to_task(
-            &converted.id,
-            NewTask {
-                title: converted.title.clone(),
-                note: None,
-                origin_kind: Some("inbox".into()),
-                origin_id: Some(converted.id.clone()),
-            },
-        )
+        .apply_action(InboxAction::Task, &only(&converted.id))
         .unwrap();
     messages.set_read(&mention.id, true).unwrap();
 
@@ -1039,6 +1025,139 @@ fn inbox_scope_splits_the_tabs_and_counts_add_up() {
         4,
         "the all tab applies no status condition"
     );
+}
+
+/// 批量动作：只统计真正改变的行，撤销回到原状态，解绑后能再次转换。
+#[test]
+fn inbox_actions_only_count_the_rows_they_change_and_can_be_undone() {
+    let db = Database::in_memory().unwrap();
+    db.inbox_sources().ensure_manual().unwrap();
+    let messages = db.inbox_messages();
+    let first = messages
+        .ingest(inbox_message("act-1", "第一条", "2026-11-26T01:00:00.000Z"))
+        .unwrap();
+    let second = messages
+        .ingest(inbox_message("act-2", "第二条", "2026-11-26T02:00:00.000Z"))
+        .unwrap();
+
+    let read = messages
+        .apply_action(InboxAction::Read, &[first.id.clone(), second.id.clone()])
+        .unwrap();
+    assert_eq!(read.applied_ids, vec![first.id.clone(), second.id.clone()]);
+    assert_eq!(read.skipped, 0);
+
+    // 第二次标已读不改变任何行，所以不进 `applied_ids`：撤销才不会把它翻回未读。
+    let again = messages
+        .apply_action(InboxAction::Read, &[first.id.clone(), "missing".into()])
+        .unwrap();
+    assert!(again.applied_ids.is_empty());
+    assert_eq!(again.skipped, 2);
+
+    let undone = messages
+        .undo_action(InboxAction::Read, &only(&first.id), &[])
+        .unwrap();
+    assert_eq!(undone.applied_ids, vec![first.id.clone()]);
+    assert_eq!(messages.get(&first.id).unwrap().unwrap().read_at, None);
+
+    let dismissed = messages
+        .apply_action(InboxAction::Dismiss, &[first.id.clone(), second.id.clone()])
+        .unwrap();
+    assert_eq!(dismissed.applied_ids.len(), 2);
+    assert_eq!(messages.counts(None, None).unwrap().pending, 0);
+
+    let restored = messages
+        .undo_action(
+            InboxAction::Dismiss,
+            &[first.id.clone(), second.id.clone()],
+            &[],
+        )
+        .unwrap();
+    assert_eq!(restored.applied_ids.len(), 2);
+    assert_eq!(
+        messages.counts(None, None).unwrap().pending,
+        2,
+        "undoing a dismissal puts both messages back to pending"
+    );
+
+    let converted = messages
+        .apply_action(InboxAction::Task, &only(&first.id))
+        .unwrap();
+    let task_id = converted.task_ids.first().cloned().unwrap();
+    assert_eq!(
+        db.tasks()
+            .get(&task_id)
+            .unwrap()
+            .unwrap()
+            .origin_id
+            .as_deref(),
+        Some(first.id.as_str())
+    );
+
+    // 撤销「转待办」是解绑保留：待办还在，origin_id 置空，唯一索引不再拦第二次转换。
+    let unbound = messages
+        .undo_action(InboxAction::Task, &only(&first.id), &only(&task_id))
+        .unwrap();
+    assert_eq!(unbound.applied_ids, vec![first.id.clone()]);
+    let task = db.tasks().get(&task_id).unwrap().unwrap();
+    assert_eq!(task.origin_id, None, "the task is kept without a binding");
+    assert_eq!(task.origin_kind.as_deref(), Some("inbox"));
+    assert_eq!(messages.get(&first.id).unwrap().unwrap().triaged_at, None);
+
+    let reconverted = messages
+        .apply_action(InboxAction::Task, &only(&first.id))
+        .unwrap();
+    assert_eq!(reconverted.applied_ids, vec![first.id.clone()]);
+    assert_eq!(db.tasks().counts().unwrap().all, 2);
+}
+
+/// 「选择全部 N 条」：条数对不上就一条都不改，对得上才按筛选解析 id。
+#[test]
+fn inbox_scope_actions_guard_on_the_expected_count() {
+    let db = Database::in_memory().unwrap();
+    db.inbox_sources().ensure_manual().unwrap();
+    let messages = db.inbox_messages();
+    for (index, category) in ["mention", "mention", "release"].iter().enumerate() {
+        messages
+            .ingest(NewInboxMessage {
+                category: (*category).into(),
+                ..inbox_message(
+                    &format!("scope-{index}"),
+                    &format!("消息 {index}"),
+                    &format!("2026-11-26T0{index}:00:00.000Z"),
+                )
+            })
+            .unwrap();
+    }
+    let scope = InboxScope::default();
+    assert_eq!(messages.count_scope(&scope).unwrap(), 3);
+
+    let stale = messages
+        .apply_action_scope(InboxAction::Dismiss, &scope, 2)
+        .unwrap();
+    assert_eq!(stale.stale_count, Some(3));
+    assert!(stale.applied_ids.is_empty());
+    assert_eq!(
+        messages.counts(None, None).unwrap().pending,
+        3,
+        "a stale count changes nothing"
+    );
+
+    let applied = messages
+        .apply_action_scope(InboxAction::Dismiss, &scope, 3)
+        .unwrap();
+    assert_eq!(applied.applied_ids.len(), 3);
+    assert_eq!(applied.stale_count, None);
+    assert_eq!(messages.counts(None, None).unwrap().dismissed, 3);
+
+    // 筛选到这个分类已经没有行了：确认时说是 3 条，实际 0 条，仍然一条都不改。
+    let empty_scope = InboxScope {
+        category: Some("mail".into()),
+        ..InboxScope::default()
+    };
+    let empty = messages
+        .apply_action_scope(InboxAction::Read, &empty_scope, 3)
+        .unwrap();
+    assert_eq!(empty.stale_count, Some(0));
 }
 
 /// 老用户的库停在 v5：打开时必须补上 0006 / 0007，而不是要求重建。

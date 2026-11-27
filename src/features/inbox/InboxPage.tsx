@@ -12,9 +12,9 @@ import {
   Tabs,
 } from "../../components/ui";
 import {
+  applyInboxAction,
   countInboxMessages,
   convertInboxMessageToTask,
-  dismissInboxMessage,
   getInboxReadBackStatus,
   getThread,
   ingestInboxMessage,
@@ -23,9 +23,14 @@ import {
   markInboxMessageRead,
   markInboxMessageUnread,
   previewMode,
+  undoInboxAction,
+  type ApplyInboxActionInput,
+  type InboxAction,
+  type InboxActionResult,
   type InboxCounts,
   type InboxMessage,
   type InboxReadBackStatus,
+  type InboxScopeFilter,
   type InboxSource,
   type InboxSyncSummary,
   type InboxTab,
@@ -33,8 +38,21 @@ import {
 import { notifyInboxChanged, notifyTasksChanged } from "../../lib/events";
 import { formatRelative } from "../../lib/format";
 import { openExternal } from "../../lib/openExternal";
+import BulkActionBar, { ConfirmDialog } from "./BulkActionBar";
 import InboxMessageDetail from "./InboxMessageDetail";
 import {
+  emptySelection,
+  isEmpty,
+  isSelected,
+  selectScope,
+  selectVisible,
+  summary as describeSelection,
+  toggle,
+  type InboxSelection,
+} from "./inboxSelection";
+import {
+  actionDoneLabels,
+  actionLabels,
   categoryOptions,
   describeCategory,
   emptyHints,
@@ -46,6 +64,10 @@ import {
 } from "./shared";
 
 const PAGE_SIZE = 50;
+/** 超过这个条数才为「转为待办」弹确认框：小批量误点还能自己取消，大批量很难。 */
+const TASK_CONFIRM_THRESHOLD = 20;
+/** 撤销窗口：够按一次，也不至于让人以为它一直在。 */
+const UNDO_WINDOW_MS = 8000;
 
 const emptyCounts: InboxCounts = { all: 0, pending: 0, task: 0, dismissed: 0, unread: 0 };
 
@@ -60,7 +82,7 @@ const devSamples = [
   {
     category: "review_requested",
     title: "请求你评审 PR #488 feat: 收件箱三栏页",
-    summary: "筛选与详情都做完了，主要想让人看一下已读与判断的交互。",
+    summary: "筛选与详情都做完了，主要想让人看一下已读与处理的交互。",
     url: "https://github.com/TencentCloud/Octop/pull/488",
   },
   {
@@ -70,6 +92,17 @@ const devSamples = [
     url: "https://github.com/TencentCloud/Octop/actions/runs/1310",
   },
 ];
+
+/** 最近一次动作，撤销窗口内一直留着；离开页面或超时即失效。 */
+interface UndoState {
+  action: InboxAction;
+  ids: string[];
+  taskIds: string[];
+}
+
+/** 需要先说清后果才能继续的两件事：批量转待办、条数变了。 */
+type ConfirmState =
+  { kind: "task"; ids: string[] } | { kind: "stale"; action: InboxAction; expected: number };
 
 /** 收件箱：来源、消息流、详情三栏；处理动作全部人工触发。 */
 function InboxPage({
@@ -94,12 +127,19 @@ function InboxPage({
   const [sourceId, setSourceId] = useState<string | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
+  /** 当前筛选下的总条数，只用于「选择全部 N 条」那一步。 */
+  const [scopeTotal, setScopeTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [mutating, setMutating] = useState(false);
   const [ingesting, setIngesting] = useState(false);
+  const [selecting, setSelecting] = useState(false);
+  const [selection, setSelection] = useState<InboxSelection>(emptySelection);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [confirm, setConfirm] = useState<ConfirmState | null>(null);
+  const [undo, setUndo] = useState<UndoState | null>(null);
   const [readBack, setReadBack] = useState<InboxReadBackStatus | null>(null);
   const requestId = useRef(0);
   const sampleIndex = useRef(0);
@@ -112,6 +152,17 @@ function InboxPage({
   const countFilter = useMemo(
     () => ({ sourceId, category: category === "all" ? null : category }),
     [category, sourceId],
+  );
+
+  /** 列表与「选择全部」共用同一套筛选，避免两处慢慢漂移。 */
+  const currentScope = useMemo<InboxScopeFilter>(
+    () => ({
+      tab: filter,
+      unreadOnly,
+      category: category === "all" ? null : category,
+      sourceId,
+    }),
+    [category, filter, sourceId, unreadOnly],
   );
 
   const refreshCounts = useCallback(async () => {
@@ -142,6 +193,7 @@ function InboxPage({
       setMessages(page.messages);
       setCursor(page.nextCursor);
       setHasMore(page.hasMore);
+      setScopeTotal(page.total);
       setCounts(nextCounts);
     } catch (loadError) {
       if (currentRequest !== requestId.current) return;
@@ -216,6 +268,20 @@ function InboxPage({
     };
   }, [load, loadReadBack, loadSources]);
 
+  // 换筛选或切 Tab 时退出选择态：否则「选择全部」会带着上一屏的条数去执行。
+  useEffect(() => {
+    setSelecting(false);
+    setSelection(emptySelection);
+    setConfirm(null);
+  }, [category, filter, sourceId, unreadOnly]);
+
+  // 撤销窗口：一次动作只留最近一次，8 秒后自己消失。
+  useEffect(() => {
+    if (!undo) return;
+    const timer = window.setTimeout(() => setUndo(null), UNDO_WINDOW_MS);
+    return () => window.clearTimeout(timer);
+  }, [undo]);
+
   const loadMore = useCallback(async () => {
     if (!hasMore || loadingMore || loading || !cursor) return;
     const currentRequest = requestId.current;
@@ -236,6 +302,7 @@ function InboxPage({
       });
       setCursor(page.nextCursor);
       setHasMore(page.hasMore);
+      setScopeTotal(page.total);
     } catch (loadError) {
       if (currentRequest !== requestId.current) return;
       setError(loadError instanceof Error ? loadError.message : "加载更多失败，请重试。");
@@ -331,20 +398,10 @@ function InboxPage({
     }
   }
 
+  /** 详情页的「忽略」就是只勾了一条的批量动作，不另开一条路径。 */
   async function dismiss() {
-    if (!selectedMessage || mutating) return;
-    setMutating(true);
-    setError(null);
-    try {
-      const updated = await dismissInboxMessage(selectedMessage.id);
-      applyMessage(updated);
-      await refreshCounts();
-      notifyInboxChanged();
-    } catch (updateError) {
-      setError(updateError instanceof Error ? updateError.message : "忽略消息失败，请重试。");
-    } finally {
-      setMutating(false);
-    }
+    if (!selectedMessage || mutating || bulkBusy) return;
+    await submitAction("dismiss", { ids: [selectedMessage.id] });
   }
 
   async function convert() {
@@ -418,6 +475,132 @@ function InboxPage({
     }
   }
 
+  /** 乐观更新：只改真正变了的行，再按当前筛选决定留还是走。 */
+  function applyLocally(action: InboxAction, result: InboxActionResult) {
+    const touched = new Set(result.appliedIds);
+    const taskByMessage = new Map(
+      result.appliedIds.map((id, index) => [id, result.taskIds[index] ?? null]),
+    );
+    const now = new Date().toISOString();
+    setMessages((current) =>
+      current
+        .map((message) => {
+          if (!touched.has(message.id)) return message;
+          switch (action) {
+            case "read":
+              return { ...message, readAt: message.readAt ?? now };
+            case "unread":
+              return { ...message, readAt: null };
+            case "dismiss":
+              return {
+                ...message,
+                triagedAt: now,
+                triageOutcome: "dismissed" as const,
+                triageRefId: null,
+              };
+            case "task":
+              return {
+                ...message,
+                triagedAt: now,
+                triageOutcome: "task" as const,
+                triageRefId: taskByMessage.get(message.id) ?? null,
+              };
+          }
+        })
+        .filter(matchesFilters),
+    );
+  }
+
+  function exitSelecting() {
+    setSelecting(false);
+    setSelection(emptySelection);
+  }
+
+  /**
+   * 所有动作的唯一入口：单条、勾选、跨页全选都走这里。
+   * 条数变了只弹确认框，不改任何一行；确认后再带上新的条数重试一次。
+   */
+  async function submitAction(action: InboxAction, input: Omit<ApplyInboxActionInput, "action">) {
+    setBulkBusy(true);
+    setError(null);
+    try {
+      const result = await applyInboxAction({ action, ...input });
+      if (result.staleCount !== null) {
+        setConfirm({ kind: "stale", action, expected: result.staleCount });
+        return;
+      }
+      applyLocally(action, result);
+      setScopeTotal((current) => Math.max(0, current - result.appliedIds.length));
+      if (result.appliedIds.length > 0) {
+        setUndo({ action, ids: result.appliedIds, taskIds: result.taskIds });
+      }
+      setConfirm(null);
+      exitSelecting();
+      await refreshCounts();
+      notifyInboxChanged();
+      if (action === "task") notifyTasksChanged();
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "处理失败，请重试。");
+      // 本地列表可能已经乐观改过一半，直接按后端重载。
+      await load();
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  function handleBulkAction(action: InboxAction) {
+    if (isEmpty(selection)) return;
+    if (selection.mode === "scope") {
+      void submitAction(action, {
+        scope: currentScope,
+        expectedCount: selection.total,
+      });
+      return;
+    }
+    if (action === "task" && selection.ids.length > TASK_CONFIRM_THRESHOLD) {
+      setConfirm({ kind: "task", ids: selection.ids });
+      return;
+    }
+    void submitAction(action, { ids: selection.ids });
+  }
+
+  async function runUndo(state: UndoState) {
+    setBulkBusy(true);
+    setError(null);
+    try {
+      await undoInboxAction({ action: state.action, ids: state.ids, taskIds: state.taskIds });
+      setUndo(null);
+      // 撤销要回到原状，手工回填容易错位，直接重载一次更稳。
+      await load();
+      notifyInboxChanged();
+      if (state.action === "task") notifyTasksChanged();
+    } catch (undoError) {
+      setError(undoError instanceof Error ? undoError.message : "撤销失败，请重试。");
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  /** 详情页的撤销：只有一条，动作由处理结果反推。 */
+  async function undoSelected() {
+    if (!selectedMessage?.triageOutcome || mutating) return;
+    const action: InboxAction = selectedMessage.triageOutcome === "task" ? "task" : "dismiss";
+    const taskIds =
+      action === "task" && selectedMessage.triageRefId ? [selectedMessage.triageRefId] : [];
+    setMutating(true);
+    setError(null);
+    try {
+      await undoInboxAction({ action, ids: [selectedMessage.id], taskIds });
+      await load();
+      notifyInboxChanged();
+      if (action === "task") notifyTasksChanged();
+    } catch (undoError) {
+      setError(undoError instanceof Error ? undoError.message : "撤销失败，请重试。");
+    } finally {
+      setMutating(false);
+    }
+  }
+
   // 计数直接从各自条件算出，不再用 all - pending 凑数。
   const tabCounts: Record<InboxTab, number> = {
     pending: counts.pending,
@@ -461,6 +644,15 @@ function InboxPage({
                 {ingesting ? "写入中…" : "造一条示例消息"}
               </Button>
             ) : null}
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={messages.length === 0}
+              aria-pressed={selecting}
+              onClick={() => (selecting ? exitSelecting() : setSelecting(true))}
+            >
+              {selecting ? "退出选择" : "选择"}
+            </Button>
             <Button variant="ghost" size="sm" onClick={() => void load()}>
               刷新
             </Button>
@@ -530,6 +722,30 @@ function InboxPage({
           </button>
         </div>
       ) : null}
+      {undo ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 callout callout-success border-b border-border px-5 py-2.5 text-sm text-success sm:px-7">
+          <p>
+            {actionDoneLabels[undo.action]} {undo.ids.length} 条
+          </p>
+          <div className="flex items-center gap-3">
+            <button
+              className="text-xs font-medium underline"
+              type="button"
+              disabled={bulkBusy}
+              onClick={() => void runUndo(undo)}
+            >
+              撤销
+            </button>
+            <button
+              className="text-xs font-medium underline"
+              type="button"
+              onClick={() => setUndo(null)}
+            >
+              知道了
+            </button>
+          </div>
+        </div>
+      ) : null}
       {notice ? (
         <div className="flex flex-wrap items-center justify-between gap-3 callout callout-success border-b border-border px-5 py-2.5 text-sm text-success sm:px-7">
           <p>{notice}</p>
@@ -594,10 +810,38 @@ function InboxPage({
         </aside>
 
         <section
-          className="min-h-72 overflow-y-auto border-b border-border lg:border-r lg:border-b-0"
+          className={
+            selecting
+              ? "min-h-72 overflow-y-auto border-b border-border pb-20 lg:border-r lg:border-b-0"
+              : "min-h-72 overflow-y-auto border-b border-border lg:border-r lg:border-b-0"
+          }
           aria-label="消息列表"
           aria-busy={loading}
         >
+          {selecting ? (
+            <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-2">
+              <span className="font-mono text-xs text-muted-foreground">
+                {describeSelection(selection)}
+              </span>
+              <div className="flex items-center gap-3">
+                <button
+                  className="text-xs font-medium text-muted-foreground underline hover:text-foreground"
+                  type="button"
+                  onClick={() => setSelection(selectVisible(messages.map((item) => item.id)))}
+                >
+                  全选本页
+                </button>
+                <button
+                  className="text-xs font-medium text-muted-foreground underline hover:text-foreground"
+                  type="button"
+                  onClick={() => setSelection(emptySelection)}
+                >
+                  清空
+                </button>
+              </div>
+            </div>
+          ) : null}
+
           {loading ? (
             <div className="divide-y divide-border" role="status" aria-label="正在加载">
               {Array.from({ length: 6 }).map((_, index) => (
@@ -624,10 +868,22 @@ function InboxPage({
                 flush
                 className="px-4 py-3"
                 aria-current={message.id === selectedId ? "true" : undefined}
-                onClick={() => void selectMessage(message)}
+                onClick={() =>
+                  selecting
+                    ? setSelection(
+                        toggle(
+                          selection,
+                          message.id,
+                          messages.map((item) => item.id),
+                        ),
+                      )
+                    : void selectMessage(message)
+                }
               >
                 <span className="flex items-start gap-2">
-                  {message.readAt ? null : (
+                  {selecting ? (
+                    <SelectionMark selected={isSelected(selection, message.id)} />
+                  ) : message.readAt ? null : (
                     <span aria-hidden className="mt-1.5 size-1.5 shrink-0 rounded-full bg-link" />
                   )}
                   <ListItemTitle clamp={2}>{message.title}</ListItemTitle>
@@ -667,10 +923,11 @@ function InboxPage({
         <InboxMessageDetail
           message={selectedMessage}
           source={selectedSource}
-          mutating={mutating}
+          mutating={mutating || bulkBusy}
           onToggleRead={() => void toggleRead()}
           onDismiss={() => void dismiss()}
           onConvert={() => void convert()}
+          onUndo={() => void undoSelected()}
           onOpenLink={() => void openSelectedLink()}
           onOpenLocal={
             selectedMessage?.relatedKind === "github_thread" && selectedMessage.relatedId
@@ -679,7 +936,70 @@ function InboxPage({
           }
         />
       </div>
+
+      {selecting ? (
+        <BulkActionBar
+          selection={selection}
+          hasMore={hasMore}
+          scopeTotal={scopeTotal}
+          busy={bulkBusy}
+          onSelectScope={() => setSelection(selectScope(scopeTotal))}
+          onAction={handleBulkAction}
+          onClear={exitSelecting}
+        />
+      ) : null}
+
+      {confirm ? (
+        <ConfirmDialog
+          title={confirm.kind === "stale" ? "条数变了" : `转为待办 ${confirm.ids.length} 条`}
+          description={
+            confirm.kind === "stale"
+              ? `现在是 ${confirm.expected} 条，仍要${actionLabels[confirm.action]}吗？`
+              : "会按消息标题新建待办。撤销只解除关联，待办会留下。"
+          }
+          details={
+            confirm.kind === "task"
+              ? confirm.ids
+                  .slice(0, 5)
+                  .map((id) => messages.find((message) => message.id === id)?.title ?? id)
+              : undefined
+          }
+          confirmLabel={confirm.kind === "stale" ? "仍要处理" : "转为待办"}
+          busy={bulkBusy}
+          onCancel={() => setConfirm(null)}
+          onConfirm={() => {
+            if (confirm.kind === "stale") {
+              void submitAction(confirm.action, {
+                scope: currentScope,
+                expectedCount: confirm.expected,
+              });
+              return;
+            }
+            void submitAction("task", { ids: confirm.ids });
+          }}
+        >
+          {confirm.kind === "task" && confirm.ids.length > 5 ? (
+            <p className="mt-2 font-mono text-xs text-muted-foreground">
+              还有 {confirm.ids.length - 5} 条未列出
+            </p>
+          ) : null}
+        </ConfirmDialog>
+      ) : null}
     </div>
+  );
+}
+
+/** 选择态的勾选框：填充表示已选，不用字符，避免字号进到 10px 以下。 */
+function SelectionMark({ selected }: { selected: boolean }) {
+  return (
+    <span
+      aria-hidden
+      className={
+        selected
+          ? "mt-1 size-3.5 shrink-0 rounded-sm border border-link bg-link"
+          : "mt-1 size-3.5 shrink-0 rounded-sm border border-input"
+      }
+    />
   );
 }
 

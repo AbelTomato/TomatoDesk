@@ -10,6 +10,8 @@ interface InboxMessageDetailProps {
   onToggleRead: () => void;
   onDismiss: () => void;
   onConvert: () => void;
+  /** 已处理的消息可以撤销，回到待处理；撤销后待办会保留。 */
+  onUndo: () => void;
   onOpenLink: () => void;
   /** 命中本地已同步的线程时为回调，否则为 null（只能走 GitHub）。 */
   onOpenLocal: (() => void) | null;
@@ -23,6 +25,7 @@ function InboxMessageDetail({
   onToggleRead,
   onDismiss,
   onConvert,
+  onUndo,
   onOpenLink,
   onOpenLocal,
 }: InboxMessageDetailProps) {
@@ -117,13 +120,19 @@ function InboxMessageDetail({
               <p className="text-xs font-medium text-muted-foreground">处理</p>
               {message.triagedAt ? (
                 <span className="font-mono text-xs text-muted-foreground">
+                  {message.triageOutcome ? `${triageLabels[message.triageOutcome]} · ` : null}
                   {formatRelative(message.triagedAt)}
-                  {message.triageOutcome ? ` · ${triageLabels[message.triageOutcome]}` : null}
                 </span>
               ) : null}
             </div>
 
-            {message.triagedAt ? null : (
+            {message.triagedAt ? (
+              <div className="mt-2">
+                <Button variant="outline" size="sm" disabled={mutating} onClick={onUndo}>
+                  撤销
+                </Button>
+              </div>
+            ) : (
               <div className="mt-2 flex flex-wrap gap-2">
                 <Button size="sm" disabled={mutating} onClick={onConvert}>
                   转为待办
@@ -136,7 +145,7 @@ function InboxMessageDetail({
 
             <div className="mt-3 flex flex-wrap items-center gap-3">
               <Button variant="ghost" size="sm" disabled={mutating} onClick={onToggleRead}>
-                {message.readAt ? "标记未读" : "标记已读"}
+                {message.readAt ? "标为未读" : "标为已读"}
               </Button>
               {message.readAt ? (
                 <span className="font-mono text-xs text-muted-foreground">
