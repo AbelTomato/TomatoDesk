@@ -5,10 +5,11 @@ use crate::{
         captures,
         dto::{
             ApplyInboxActionInput, CountCapturesInput, CountInboxMessagesInput, CreateCaptureInput,
-            CreateTagInput, CreateTaskInput, IdInput, InboxScopeInput, IngestInboxMessageInput,
-            ListCapturesPageInput, ListInboxMessagesInput, ListRepoThreadsInput,
-            ListTasksPageInput, SearchCapturesInput, SetCaptureTagsInput, UndoInboxActionInput,
-            UpdateCaptureInput, UpdateRepoMetaInput, UpdateTaskInput,
+            CreateTagInput, CreateTaskInput, IdInput, InboxRuleFilterInput, InboxScopeInput,
+            IngestInboxMessageInput, ListCapturesPageInput, ListInboxMessagesInput,
+            ListRepoThreadsInput, ListTasksPageInput, SaveInboxRuleInput, SearchCapturesInput,
+            SetCaptureTagsInput, UndoInboxActionInput, UpdateCaptureInput, UpdateRepoMetaInput,
+            UpdateTaskInput,
         },
         error::CommandErrorCode,
         inbox, repos, tags, tasks,
@@ -1012,7 +1013,8 @@ fn marking_a_notification_read_enqueues_the_write_back_and_unread_cancels_it() {
             related_id: None,
             payload_json: None,
         })
-        .unwrap();
+        .unwrap()
+        .message;
 
     let read = inbox::mark_inbox_message_read_in(
         &database,
@@ -1229,4 +1231,144 @@ fn inbox_action_inputs_reject_ambiguous_or_unbounded_targets() {
     .validate()
     .unwrap_err();
     assert_eq!(too_many.code, CommandErrorCode::Validation);
+}
+
+fn dismiss_rule(title_contains: &str) -> SaveInboxRuleInput {
+    SaveInboxRuleInput {
+        id: None,
+        source_id: None,
+        category: None,
+        actor_contains: None,
+        title_contains: Some(title_contains.into()),
+        action: "dismiss".into(),
+        enabled: None,
+    }
+}
+
+/// 规则验收：命中 2 条、留下 1 条待处理；关掉开关后新消息恢复正常。
+#[test]
+fn inbox_rules_triage_new_messages_and_can_be_switched_off() {
+    let database = Database::in_memory().unwrap();
+
+    // 空条件不能保存：一条没有条件的规则会吞掉整个收件箱。
+    let error = inbox::save_inbox_rule_in(
+        &database,
+        SaveInboxRuleInput {
+            id: None,
+            source_id: None,
+            category: None,
+            actor_contains: None,
+            title_contains: None,
+            action: "dismiss".into(),
+            enabled: None,
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.code, CommandErrorCode::Validation);
+
+    let rule = inbox::save_inbox_rule_in(&database, dismiss_rule("Dependabot")).unwrap();
+    assert!(rule.enabled);
+    assert_eq!(rule.hit_count, 0);
+
+    // 试跑：还没有消息时两个数都是 0。
+    let preview = inbox::preview_inbox_rule_in(
+        &database,
+        InboxRuleFilterInput {
+            title_contains: Some("Dependabot".into()),
+            ..InboxRuleFilterInput::default()
+        },
+    )
+    .unwrap();
+    assert_eq!((preview.match_count, preview.pending_count), (0, 0));
+
+    // 两条命中（其中一条小写，验证不区分大小写），一条不命中。
+    let hit = inbox::ingest_inbox_message_in(
+        &database,
+        inbox_input("dep-1", "release", "Dependabot 升级了 serde", 1),
+    )
+    .unwrap();
+    assert_eq!(hit.triage_outcome, Some(TriageOutcome::Dismissed));
+    assert_eq!(
+        hit.triage_by.as_deref(),
+        Some("rule"),
+        "入库即被规则处理，并标出来源"
+    );
+    let lowercase = inbox::ingest_inbox_message_in(
+        &database,
+        inbox_input("dep-2", "release", "dependabot 升级了 axum", 2),
+    )
+    .unwrap();
+    assert_eq!(lowercase.triage_outcome, Some(TriageOutcome::Dismissed));
+    let pending = inbox::ingest_inbox_message_in(
+        &database,
+        inbox_input("mention-1", "mention", "有人在 PR #490 里 @ 了你", 3),
+    )
+    .unwrap();
+    assert_eq!(pending.triaged_at, None);
+
+    let counts =
+        inbox::count_inbox_messages_in(&database, CountInboxMessagesInput::default()).unwrap();
+    assert_eq!(
+        (counts.all, counts.pending, counts.dismissed),
+        (3, 1, 2),
+        "two messages are dismissed by the rule, one stays pending"
+    );
+
+    // 试跑报的是「还会被改动」的条数：两条都已经处理过，所以待处理是 0。
+    let preview = inbox::preview_inbox_rule_in(
+        &database,
+        InboxRuleFilterInput {
+            title_contains: Some("Dependabot".into()),
+            ..InboxRuleFilterInput::default()
+        },
+    )
+    .unwrap();
+    assert_eq!((preview.match_count, preview.pending_count), (2, 0));
+
+    // 重新同步同一条消息不是新消息：状态不被改写，命中数也不涨。
+    let again = inbox::ingest_inbox_message_in(
+        &database,
+        inbox_input("dep-1", "release", "Dependabot 升级了 serde", 1),
+    )
+    .unwrap();
+    assert_eq!(again.triage_outcome, Some(TriageOutcome::Dismissed));
+    assert_eq!(
+        inbox::list_inbox_rules_in(&database).unwrap()[0].hit_count,
+        2
+    );
+
+    // 关掉开关：新消息回到待处理。
+    inbox::save_inbox_rule_in(
+        &database,
+        SaveInboxRuleInput {
+            id: Some(rule.id.clone()),
+            enabled: Some(false),
+            ..dismiss_rule("Dependabot")
+        },
+    )
+    .unwrap();
+    let after = inbox::ingest_inbox_message_in(
+        &database,
+        inbox_input("dep-3", "release", "Dependabot 升级了 tokio", 4),
+    )
+    .unwrap();
+    assert_eq!(
+        after.triaged_at, None,
+        "switching the rule off restores the old behaviour"
+    );
+
+    let remaining = inbox::delete_inbox_rule_in(
+        &database,
+        IdInput {
+            id: rule.id.clone(),
+        },
+    )
+    .unwrap();
+    assert!(remaining.is_empty());
+    assert_eq!(
+        inbox::delete_inbox_rule_in(&database, IdInput { id: rule.id })
+            .unwrap_err()
+            .code,
+        CommandErrorCode::NotFound
+    );
 }

@@ -7,7 +7,8 @@ pub use error::{DbError, DbResult};
 pub use repositories::{
     CaptureRepository, EmailSourceRow, GITHUB_SOURCE_ID, GithubReleaseRepository,
     GithubRepoRepository, GithubThreadRepository, InboxMessageRepository, InboxReadBackRepository,
-    InboxSourceRepository, MANUAL_SOURCE_ID, SyncRunRepository, TagRepository, TaskRepository,
+    InboxRuleRepository, InboxSourceRepository, MANUAL_SOURCE_ID, SyncRunRepository, TagRepository,
+    TaskRepository,
 };
 
 #[cfg(test)]

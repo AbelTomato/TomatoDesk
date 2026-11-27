@@ -225,6 +225,8 @@ export interface InboxMessage {
   triagedAt: string | null;
   triageOutcome: TriageOutcome | null;
   triageRefId: string | null;
+  /** `null` 是人处理的，`rule` 是规则自动处理的。 */
+  triageBy: "rule" | null;
   relatedKind: string | null;
   relatedId: string | null;
 }
@@ -302,6 +304,51 @@ export interface InboxActionResult {
   skipped: number;
   /** 非 `null` 表示条数与确认时不一致、一条都没改，值是实际条数。 */
   staleCount: number | null;
+}
+
+/** 规则能做的动作：转待办会生成实体，不适合在没人看的时候静默执行。 */
+export type InboxRuleAction = "read" | "dismiss";
+
+/** 一条收件箱规则：条件之间是「且」，至少有一个条件。 */
+export interface InboxRule {
+  id: string;
+  sourceId: string | null;
+  category: string | null;
+  /** 发件人 / 触发人包含这段文字。 */
+  actorContains: string | null;
+  titleContains: string | null;
+  action: InboxRuleAction;
+  enabled: boolean;
+  hitCount: number;
+  lastHitAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** 保存规则：`id` 为空表示新建，否则更新条件与开关。 */
+export interface InboxRuleInput {
+  id?: string | null;
+  sourceId?: string | null;
+  category?: string | null;
+  actorContains?: string | null;
+  titleContains?: string | null;
+  action: InboxRuleAction;
+  enabled?: boolean | null;
+}
+
+/** 试跑入参：只要条件，不需要动作与开关。 */
+export interface InboxRuleFilterInput {
+  sourceId?: string | null;
+  category?: string | null;
+  actorContains?: string | null;
+  titleContains?: string | null;
+}
+
+/** 试跑结果：命中数含已处理的行，待处理数才是规则真正会改动的条数。 */
+export interface InboxRulePreview {
+  matchCount: number;
+  pendingCount: number;
+  sampleTitles: string[];
 }
 
 /** 后台轮询一轮的结果，作为 `inbox-sync-updated` 事件的载荷；失败时为 `null`。 */
@@ -731,6 +778,30 @@ export async function getInboxReadBackStatus(): Promise<InboxReadBackStatus> {
 export async function retryInboxReadBack(): Promise<InboxReadBackStatus> {
   const mocked = await preview((data) => data.readBackStatus);
   return mocked ?? call("retry_inbox_read_back");
+}
+
+/** 收件箱规则：按创建顺序返回，禁用的一起返回。 */
+export async function listInboxRules(): Promise<InboxRule[]> {
+  const mocked = await preview((data) => data.inboxRules);
+  return mocked ?? call("list_inbox_rules");
+}
+
+/** 保存规则：空条件会被后端拒绝，避免一条没有条件的规则吞掉整个收件箱。 */
+export async function saveInboxRule(input: InboxRuleInput): Promise<InboxRule> {
+  const mocked = await preview((data) => data.saveInboxRule(input));
+  return mocked ?? call("save_inbox_rule", { input });
+}
+
+/** 删除规则后直接返回剩余列表，前端不必再查一次。 */
+export async function deleteInboxRule(id: string): Promise<InboxRule[]> {
+  const mocked = await preview((data) => data.deleteInboxRule(id));
+  return mocked ?? call("delete_inbox_rule", { input: { id } });
+}
+
+/** 试跑：只看最近 14 天还有多少条会被命中，不写任何数据。 */
+export async function previewInboxRule(input: InboxRuleFilterInput): Promise<InboxRulePreview> {
+  const mocked = await preview((data) => data.previewInboxRule(input));
+  return mocked ?? call("preview_inbox_rule", { input });
 }
 
 export async function markInboxMessageRead(id: string): Promise<InboxMessage> {

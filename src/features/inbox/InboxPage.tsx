@@ -895,7 +895,11 @@ function InboxPage({
                   <span>{describeCategory(message.category)}</span>
                   {message.actor ? <span>{message.actor}</span> : null}
                   {message.triageOutcome && filter === "all" ? (
-                    <Badge tone="neutral">{triageLabels[message.triageOutcome]}</Badge>
+                    <>
+                      <Badge tone="neutral">{triageLabels[message.triageOutcome]}</Badge>
+                      {/* 规则处理的消息要能看出来，不然会像凭空消失。 */}
+                      {message.triageBy === "rule" ? <Badge tone="outline">规则</Badge> : null}
+                    </>
                   ) : null}
                   <time className="ml-auto" dateTime={message.occurredAt}>
                     {formatRelative(message.occurredAt)}

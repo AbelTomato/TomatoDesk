@@ -20,6 +20,10 @@ import type {
   InboxPage,
   InboxPageInput,
   InboxReadBackStatus,
+  InboxRule,
+  InboxRuleFilterInput,
+  InboxRuleInput,
+  InboxRulePreview,
   InboxSource,
   InboxTab,
   MigrationNotice,
@@ -347,6 +351,7 @@ const messages: InboxMessage[] = [
     triagedAt: null,
     triageOutcome: null,
     triageRefId: null,
+    triageBy: null,
     relatedKind: "github_thread",
     relatedId: "thread-1",
   },
@@ -365,6 +370,7 @@ const messages: InboxMessage[] = [
     triagedAt: null,
     triageOutcome: null,
     triageRefId: null,
+    triageBy: null,
     relatedKind: "github_thread",
     relatedId: "thread-3",
   },
@@ -383,6 +389,7 @@ const messages: InboxMessage[] = [
     triagedAt: null,
     triageOutcome: null,
     triageRefId: null,
+    triageBy: null,
     relatedKind: null,
     relatedId: null,
   },
@@ -401,6 +408,7 @@ const messages: InboxMessage[] = [
     triagedAt: daysAgo(2),
     triageOutcome: "task",
     triageRefId: "task-3",
+    triageBy: null,
     relatedKind: "github_thread",
     relatedId: "thread-5",
   },
@@ -419,6 +427,7 @@ const messages: InboxMessage[] = [
     triagedAt: hoursAgo(5),
     triageOutcome: "dismissed",
     triageRefId: null,
+    triageBy: "rule",
     relatedKind: null,
     relatedId: null,
   },
@@ -437,6 +446,7 @@ const messages: InboxMessage[] = [
     triagedAt: null,
     triageOutcome: null,
     triageRefId: null,
+    triageBy: null,
     relatedKind: null,
     relatedId: null,
   },
@@ -455,6 +465,7 @@ const messages: InboxMessage[] = [
     triagedAt: null,
     triageOutcome: null,
     triageRefId: null,
+    triageBy: null,
     relatedKind: null,
     relatedId: null,
   },
@@ -543,6 +554,7 @@ const applyInboxAction = (input: ApplyInboxActionInput): InboxActionResult => {
       message.triagedAt = nowIso();
       message.triageOutcome = "dismissed";
       message.triageRefId = null;
+      message.triageBy = null;
     } else if (input.action === "task" && !message.triagedAt) {
       const created = convertInboxMessage(message.id);
       result.appliedIds.push(id);
@@ -579,10 +591,12 @@ const undoInboxAction = (input: UndoInboxActionInput): InboxActionResult => {
       message.triagedAt = null;
       message.triageOutcome = null;
       message.triageRefId = null;
+      message.triageBy = null;
     } else if (input.action === "task" && message.triageOutcome === "task") {
       message.triagedAt = null;
       message.triageOutcome = null;
       message.triageRefId = null;
+      message.triageBy = null;
     } else {
       result.skipped += 1;
       continue;
@@ -595,6 +609,78 @@ const undoInboxAction = (input: UndoInboxActionInput): InboxActionResult => {
     if (task?.originKind === "inbox") task.originId = null;
   }
   return result;
+};
+
+/**
+ * 规则在预览里也是可变的：新建、切开关、删除都改这份列表。
+ * 首条规则正好解释了 `message-5` 为什么带着「规则」标记。
+ */
+const inboxRules: InboxRule[] = [
+  {
+    id: "rule-1",
+    sourceId: "source-github",
+    category: "release",
+    actorContains: null,
+    titleContains: null,
+    action: "dismiss",
+    enabled: true,
+    hitCount: 3,
+    lastHitAt: hoursAgo(6),
+    createdAt: daysAgo(20),
+    updatedAt: daysAgo(9),
+  },
+];
+
+const saveInboxRule = (input: InboxRuleInput): InboxRule => {
+  const existing = input.id ? inboxRules.find((rule) => rule.id === input.id) : undefined;
+  const next: InboxRule = {
+    id: existing?.id ?? `rule-${Date.now()}`,
+    sourceId: input.sourceId || null,
+    category: input.category || null,
+    actorContains: input.actorContains?.trim() || null,
+    titleContains: input.titleContains?.trim() || null,
+    action: input.action,
+    enabled: input.enabled ?? existing?.enabled ?? true,
+    hitCount: existing?.hitCount ?? 0,
+    lastHitAt: existing?.lastHitAt ?? null,
+    createdAt: existing?.createdAt ?? nowIso(),
+    updatedAt: nowIso(),
+  };
+  if (existing) Object.assign(existing, next);
+  else inboxRules.push(next);
+  return { ...next };
+};
+
+const deleteInboxRule = (id: string): InboxRule[] => {
+  const index = inboxRules.findIndex((rule) => rule.id === id);
+  if (index >= 0) inboxRules.splice(index, 1);
+  return [...inboxRules];
+};
+
+/** 与后端 `preview` 同口径：最近 14 天、条件为「且」、文本按小写包含。 */
+const previewInboxRule = (input: InboxRuleFilterInput): InboxRulePreview => {
+  const hasCondition = Boolean(
+    input.sourceId || input.category || input.actorContains?.trim() || input.titleContains?.trim(),
+  );
+  if (!hasCondition) return { matchCount: 0, pendingCount: 0, sampleTitles: [] };
+
+  const cutoff = Date.now() - 14 * 24 * 60 * 60 * 1000;
+  const contains = (value: string | null, needle?: string | null) =>
+    !needle || (value ?? "").toLowerCase().includes(needle.trim().toLowerCase());
+  const matched = messages.filter(
+    (message) =>
+      Date.parse(message.occurredAt) >= cutoff &&
+      (!input.sourceId || message.sourceId === input.sourceId) &&
+      (!input.category || message.category === input.category) &&
+      contains(message.actor, input.actorContains) &&
+      contains(message.title, input.titleContains),
+  );
+  const pending = matched.filter((message) => !message.triagedAt);
+  return {
+    matchCount: matched.length,
+    pendingCount: pending.length,
+    sampleTitles: pending.slice(0, 5).map((message) => message.title),
+  };
 };
 
 const findMessage = (id: string): InboxMessage => {
@@ -615,6 +701,7 @@ const dismissInboxMessage = (id: string): InboxMessage => {
   if (!message.triagedAt) {
     message.triagedAt = nowIso();
     message.triageOutcome = "dismissed";
+    message.triageBy = null;
     message.readAt = message.readAt ?? nowIso();
   }
   return { ...message };
@@ -638,6 +725,7 @@ const convertInboxMessage = (id: string): Task => {
   message.triagedAt = nowIso();
   message.triageOutcome = "task";
   message.triageRefId = created.id;
+  message.triageBy = null;
   message.readAt = message.readAt ?? nowIso();
   return { ...created };
 };
@@ -1240,6 +1328,10 @@ export const fixtures = {
   dismissInboxMessage,
   convertInboxMessage,
   getInboxMessage: findMessage,
+  inboxRules,
+  saveInboxRule,
+  deleteInboxRule,
+  previewInboxRule,
   readBackStatus,
   repos,
   repo,

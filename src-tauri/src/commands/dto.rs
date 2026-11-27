@@ -5,8 +5,9 @@ use crate::{
     commands::error::{CommandError, CommandResult},
     domain::{
         CaptureCursor, CaptureKind, CapturePageQuery, CaptureSort, EmailTls, InboxAction,
-        InboxMessageCursor, InboxPageQuery, InboxScope, InboxTab, NewInboxMessage, TaskCursor,
-        TaskPageQuery, TaskStatus, ThreadKind, ThreadQuery, ThreadRelationship, ThreadState,
+        InboxMessageCursor, InboxPageQuery, InboxRuleAction, InboxRuleFilter, InboxRuleForm,
+        InboxScope, InboxTab, NewInboxMessage, TaskCursor, TaskPageQuery, TaskStatus, ThreadKind,
+        ThreadQuery, ThreadRelationship, ThreadState,
     },
 };
 
@@ -722,6 +723,76 @@ impl EmailAccountInput {
             port,
             tls,
             mailbox,
+        })
+    }
+}
+
+/// 规则条件入参：四个字段都可空，但保存时至少要有一个条件。
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InboxRuleFilterInput {
+    pub source_id: Option<String>,
+    pub category: Option<String>,
+    /// 发件人 / 触发人包含这段文字。
+    pub actor_contains: Option<String>,
+    pub title_contains: Option<String>,
+}
+
+impl InboxRuleFilterInput {
+    /// 试跑允许空条件（回 0 条），保存时另行要求至少一个条件。
+    pub(super) fn into_filter(self) -> CommandResult<InboxRuleFilter> {
+        Ok(InboxRuleFilter {
+            source_id: optional_text("sourceId", self.source_id, MAX_ID_LENGTH)?,
+            category: optional_text("category", self.category, MAX_CATEGORY_LENGTH)?,
+            actor_contains: optional_text("actorContains", self.actor_contains, MAX_ACTOR_LENGTH)?,
+            title_contains: optional_text(
+                "titleContains",
+                self.title_contains,
+                MAX_TASK_TITLE_LENGTH,
+            )?,
+        })
+    }
+}
+
+/// 保存规则：`id` 为空表示新建，否则更新条件与开关。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SaveInboxRuleInput {
+    pub id: Option<String>,
+    pub source_id: Option<String>,
+    pub category: Option<String>,
+    pub actor_contains: Option<String>,
+    pub title_contains: Option<String>,
+    /// `read` / `dismiss`：规则不生成实体，只改状态。
+    pub action: String,
+    /// 缺省启用。
+    pub enabled: Option<bool>,
+}
+
+impl SaveInboxRuleInput {
+    pub(super) fn validate(self) -> CommandResult<InboxRuleForm> {
+        let filter = InboxRuleFilterInput {
+            source_id: self.source_id,
+            category: self.category,
+            actor_contains: self.actor_contains,
+            title_contains: self.title_contains,
+        }
+        .into_filter()?;
+        if filter.is_empty() {
+            return Err(CommandError::validation(
+                "规则至少要有一个条件，否则会命中全部消息",
+            ));
+        }
+        let action = self
+            .action
+            .trim()
+            .parse::<InboxRuleAction>()
+            .map_err(|_| CommandError::validation("action must be one of read, dismiss"))?;
+        Ok(InboxRuleForm {
+            id: optional_text("id", self.id, MAX_ID_LENGTH)?,
+            filter,
+            action,
+            enabled: self.enabled.unwrap_or(true),
         })
     }
 }

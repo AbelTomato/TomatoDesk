@@ -96,10 +96,8 @@ pub(crate) async fn sync(database: &Database) -> Result<InboxSyncSummary, String
         let Some(message) = build_message(notification, &source.id, related, payload) else {
             continue;
         };
-        database
-            .inbox_messages()
-            .ingest(message)
-            .map_err(|error| error.to_string())?;
+        // 走应用层入库：新消息会立刻过一遍规则，老消息只做更新。
+        super::ingest(database, message).map_err(|error| error.to_string())?;
         ingested_count += 1;
     }
 

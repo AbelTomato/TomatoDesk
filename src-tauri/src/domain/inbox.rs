@@ -198,6 +198,44 @@ impl FromStr for InboxAction {
     }
 }
 
+/// 规则能做的动作。转待办会生成实体，不适合在没人看的时候静默执行，
+/// 所以规则只有「标为已读」与「忽略」两种。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InboxRuleAction {
+    Read,
+    Dismiss,
+}
+
+impl InboxRuleAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Dismiss => "dismiss",
+        }
+    }
+
+    /// 规则动作就是批量动作的一个子集，执行时复用同一条路径。
+    pub fn to_action(self) -> InboxAction {
+        match self {
+            Self::Read => InboxAction::Read,
+            Self::Dismiss => InboxAction::Dismiss,
+        }
+    }
+}
+
+impl FromStr for InboxRuleAction {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "read" => Ok(Self::Read),
+            "dismiss" => Ok(Self::Dismiss),
+            _ => Err(format!("unknown inbox rule action: {value}")),
+        }
+    }
+}
+
 /// 一条收件箱消息：原文不可编辑，用户只能改已读与判断结果。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -220,6 +258,9 @@ pub struct InboxMessage {
     pub triage_outcome: Option<TriageOutcome>,
     /// 指向 `tasks.id` 或 `captures.id`，弱关联。
     pub triage_ref_id: Option<String>,
+    /// `None` 是人处理的，`Some("rule")` 是规则自动处理的。
+    /// 只用于在「全部」里标出「规则」，避免消息被静默隐藏。
+    pub triage_by: Option<String>,
     pub related_kind: Option<String>,
     pub related_id: Option<String>,
 }
@@ -367,6 +408,111 @@ impl InboxActionResult {
             ..Self::new(action)
         }
     }
+}
+
+/// 规则条件（不含动作与开关）。新建表单、试跑与入库匹配共用同一套条件。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InboxRuleFilter {
+    pub source_id: Option<String>,
+    pub category: Option<String>,
+    /// 发件人 / 触发人包含这段文字。
+    pub actor_contains: Option<String>,
+    pub title_contains: Option<String>,
+}
+
+impl InboxRuleFilter {
+    pub fn is_empty(&self) -> bool {
+        self.source_id.is_none()
+            && self.category.is_none()
+            && self.actor_contains.is_none()
+            && self.title_contains.is_none()
+    }
+
+    /// 条件之间是「且」。空条件不命中任何消息：写入口已经拦住空规则，
+    /// 这里再兜一次，避免一条空规则吞掉整个收件箱。
+    pub fn matches(&self, message: &InboxMessage) -> bool {
+        if self.is_empty() {
+            return false;
+        }
+        self.source_id
+            .as_deref()
+            .is_none_or(|value| value == message.source_id)
+            && self
+                .category
+                .as_deref()
+                .is_none_or(|value| value == message.category)
+            && contains_text(message.actor.as_deref(), self.actor_contains.as_deref())
+            && contains_text(Some(&message.title), self.title_contains.as_deref())
+    }
+}
+
+/// 包含判断：规则里的文字按「不区分大小写」理解，与 SQLite `LIKE` 的默认行为一致。
+fn contains_text(haystack: Option<&str>, needle: Option<&str>) -> bool {
+    match needle {
+        None => true,
+        Some(needle) => {
+            haystack.is_some_and(|value| value.to_lowercase().contains(&needle.to_lowercase()))
+        }
+    }
+}
+
+/// 一条规则：条件 + 动作 + 开关与命中统计。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InboxRule {
+    pub id: String,
+    pub source_id: Option<String>,
+    pub category: Option<String>,
+    pub actor_contains: Option<String>,
+    pub title_contains: Option<String>,
+    pub action: InboxRuleAction,
+    pub enabled: bool,
+    pub hit_count: i64,
+    pub last_hit_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl InboxRule {
+    pub fn filter(&self) -> InboxRuleFilter {
+        InboxRuleFilter {
+            source_id: self.source_id.clone(),
+            category: self.category.clone(),
+            actor_contains: self.actor_contains.clone(),
+            title_contains: self.title_contains.clone(),
+        }
+    }
+
+    pub fn matches(&self, message: &InboxMessage) -> bool {
+        self.filter().matches(message)
+    }
+}
+
+/// 规则写入口：`id` 为 `None` 时新建，否则更新已有规则的条件与开关。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InboxRuleForm {
+    pub id: Option<String>,
+    pub filter: InboxRuleFilter,
+    pub action: InboxRuleAction,
+    pub enabled: bool,
+}
+
+/// 试跑结果：`match_count` 是最近 14 天符合条件的条数（含已处理），
+/// `pending_count` 是其中还没处理的、真正会被规则改动的条数。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InboxRulePreview {
+    pub match_count: i64,
+    pub pending_count: i64,
+    pub sample_titles: Vec<String>,
+}
+
+/// 一次入库的结果。`created` 决定要不要跑规则：重新同步的老消息已经被人看过，
+/// 再让规则改写会出现「撤销之后又被规则收回去」的循环。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IngestOutcome {
+    pub message: InboxMessage,
+    pub created: bool,
 }
 
 /// 入库入参：连接器与开发用 ingest 共用，去重键是 `(source_id, external_id)`。
@@ -517,7 +663,7 @@ pub struct InboxReadBackStatus {
 
 #[cfg(test)]
 mod tests {
-    use super::InboxMessage;
+    use super::{InboxMessage, InboxRuleFilter};
 
     fn message(summary: Option<&str>, url: Option<&str>) -> InboxMessage {
         InboxMessage {
@@ -535,6 +681,7 @@ mod tests {
             triaged_at: None,
             triage_outcome: None,
             triage_ref_id: None,
+            triage_by: None,
             related_kind: None,
             related_id: None,
         }
@@ -560,5 +707,41 @@ mod tests {
         );
         assert_eq!(message(Some("   "), None).task_note(), None);
         assert_eq!(message(None, None).task_note(), None);
+    }
+
+    #[test]
+    fn rule_filters_are_anded_and_empty_rules_match_nothing() {
+        let mut release = message(Some("摘要"), None);
+        release.actor = Some("dependabot[bot]".into());
+        release.category = "release".into();
+
+        let mut filter = InboxRuleFilter::default();
+        assert!(
+            !filter.matches(&release),
+            "an empty rule would swallow the whole inbox"
+        );
+
+        filter.title_contains = Some("标题".into());
+        assert!(filter.matches(&release));
+
+        filter.category = Some("release".into());
+        assert!(filter.matches(&release));
+        filter.category = Some("mention".into());
+        assert!(!filter.matches(&release), "conditions are ANDed");
+
+        filter.category = None;
+        filter.actor_contains = Some("DEPENDABOT".into());
+        assert!(filter.matches(&release), "text matching ignores case");
+
+        filter.actor_contains = Some("renovate".into());
+        assert!(!filter.matches(&release));
+
+        // 没有触发人的消息不会命中「发件人包含」这条。
+        let anonymous = message(Some("摘要"), None);
+        let actor_filter = InboxRuleFilter {
+            actor_contains: Some("github".into()),
+            ..InboxRuleFilter::default()
+        };
+        assert!(!actor_filter.matches(&anonymous));
     }
 }

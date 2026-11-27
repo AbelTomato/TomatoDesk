@@ -9,8 +9,8 @@ use rusqlite::{Connection, Transaction};
 
 use super::{
     CaptureRepository, DbError, DbResult, GithubReleaseRepository, GithubRepoRepository,
-    GithubThreadRepository, InboxMessageRepository, InboxReadBackRepository, InboxSourceRepository,
-    SyncRunRepository, TagRepository, TaskRepository,
+    GithubThreadRepository, InboxMessageRepository, InboxReadBackRepository, InboxRuleRepository,
+    InboxSourceRepository, SyncRunRepository, TagRepository, TaskRepository,
 };
 
 struct Migration {
@@ -272,6 +272,10 @@ impl Database {
 
     pub fn inbox_read_back(&self) -> InboxReadBackRepository {
         InboxReadBackRepository::new(self.clone())
+    }
+
+    pub fn inbox_rules(&self) -> InboxRuleRepository {
+        InboxRuleRepository::new(self.clone())
     }
 
     pub(super) fn connection(&self) -> DbResult<MutexGuard<'_, Connection>> {

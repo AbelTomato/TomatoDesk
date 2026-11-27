@@ -82,6 +82,10 @@ pub fn run() {
             commands::ingest_inbox_message,
             commands::get_inbox_read_back_status,
             commands::retry_inbox_read_back,
+            commands::list_inbox_rules,
+            commands::save_inbox_rule,
+            commands::delete_inbox_rule,
+            commands::preview_inbox_rule,
             commands::export_captures_json,
             commands::export_captures_markdown
         ])

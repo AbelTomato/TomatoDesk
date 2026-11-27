@@ -543,6 +543,7 @@ mod tests {
                 payload_json: Some(format!(r#"{{"uid":{uid},"uidValidity":{uid_validity}}}"#)),
             })
             .expect("写入邮件")
+            .message
             .id
     }
 
@@ -731,6 +732,7 @@ mod tests {
                 payload_json: None,
             })
             .expect("写入邮件")
+            .message
             .id;
         mark_read(&database, &id);
 

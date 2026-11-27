@@ -4,7 +4,7 @@ use uuid::Uuid;
 use crate::{
     domain::{
         InboxAction, InboxActionResult, InboxCounts, InboxMessage, InboxMessageCursor, InboxPage,
-        InboxPageQuery, InboxScope, InboxTab, NewInboxMessage, NewTask,
+        InboxPageQuery, InboxScope, InboxTab, IngestOutcome, NewInboxMessage, NewTask,
     },
     infrastructure::db::{Database, DbError, DbResult},
 };
@@ -14,7 +14,7 @@ use super::{parse_value, task::insert_task};
 /// 收件箱消息按 `occurred_at` 倒序分页，索引与排序保持一致。
 const MESSAGE_FIELDS: &str = "id, source_id, external_id, category, title, summary, body, url, \
                              actor, occurred_at, read_at, triaged_at, triage_outcome, \
-                             triage_ref_id, related_kind, related_id";
+                             triage_ref_id, related_kind, related_id, triage_by";
 
 type RawMessage = (
     String,
@@ -33,6 +33,7 @@ type RawMessage = (
     Option<String>,
     Option<String>,
     Option<String>,
+    Option<String>,
 );
 
 pub struct InboxMessageRepository {
@@ -44,13 +45,16 @@ impl InboxMessageRepository {
         Self { database }
     }
 
-    /// 按 `(source_id, external_id)` 去重写入。
+    /// 按 `(source_id, external_id)` 去重写入，并告知这条消息是不是新建的。
     ///
     /// 规则（见方案 5.6）：
     /// - 已判断的消息不因重新同步而恢复未读，判断结果也不会被覆盖；
     /// - 未判断的消息如果有新进展，重新变为未读；
     /// - `related_*` 只做补写，不会被空值清掉。
-    pub fn ingest(&self, message: NewInboxMessage) -> DbResult<InboxMessage> {
+    ///
+    /// `created` 是入库前先查一次得到的：规则只对新消息生效，重新同步的老消息
+    /// 已经被人处理过，不该被规则再改一遍。
+    pub fn ingest(&self, message: NewInboxMessage) -> DbResult<IngestOutcome> {
         if message.title.trim().is_empty() {
             return Err(DbError::InvalidData(
                 "inbox message title cannot be empty".into(),
@@ -64,6 +68,7 @@ impl InboxMessageRepository {
 
         let id = Uuid::new_v4().to_string();
         self.database.with_connection(|connection| {
+            let created = !message_exists(connection, &message.source_id, &message.external_id)?;
             connection.execute(
                 "INSERT INTO inbox_messages(
                      id, source_id, external_id, external_updated_at, category, title, summary,
@@ -119,6 +124,7 @@ impl InboxMessageRepository {
                 .optional()?
                 .map(decode_message)
                 .transpose()?
+                .map(|message| IngestOutcome { message, created })
                 .ok_or(DbError::NotFound("inbox message"))
         })
     }
@@ -248,6 +254,41 @@ impl InboxMessageRepository {
             .with_transaction(|transaction| undo_in(transaction, action, ids, task_ids))
     }
 
+    /// 规则命中后的执行：动作与人工触发的完全一致，另外累加规则的命中统计。
+    /// 两个写入在同一个事务里，不会出现「改了消息却没记命中」。
+    ///
+    /// `triage_by` 只标在真正的处理结果上：规则标已读不改变处理状态，
+    /// 消息仍然是「待处理」，写这个字段会让详情与「规则」标记说反话。
+    ///
+    /// 只对真正变了的行计数：规则重复命中一条已经处理过的消息不算一次命中。
+    pub fn apply_rule(
+        &self,
+        rule_id: &str,
+        action: InboxAction,
+        id: &str,
+    ) -> DbResult<InboxActionResult> {
+        self.database.with_transaction(|transaction| {
+            let result = apply_in(transaction, action, &[id.to_owned()])?;
+            if result.applied_ids.is_empty() {
+                return Ok(result);
+            }
+            if action == InboxAction::Dismiss {
+                transaction.execute(
+                    "UPDATE inbox_messages SET triage_by = 'rule' WHERE id = ?1",
+                    [id],
+                )?;
+            }
+            transaction.execute(
+                "UPDATE inbox_rules
+                 SET hit_count = hit_count + 1,
+                     last_hit_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE id = ?1",
+                [rule_id],
+            )?;
+            Ok(result)
+        })
+    }
+
     /// 已读 / 未读只改 `read_at`；已判断的消息也可以标记，方便回看。
     pub fn set_read(&self, id: &str, read: bool) -> DbResult<Option<InboxMessage>> {
         let action = if read {
@@ -342,7 +383,8 @@ fn apply_in(
                     "UPDATE inbox_messages
                      SET triaged_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                          triage_outcome = 'dismissed',
-                         triage_ref_id = NULL
+                         triage_ref_id = NULL,
+                         triage_by = NULL
                      WHERE id = ?1 AND triaged_at IS NULL",
                     [id],
                 )?;
@@ -359,7 +401,8 @@ fn apply_in(
                     "UPDATE inbox_messages
                      SET triaged_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                          triage_outcome = 'task',
-                         triage_ref_id = ?2
+                         triage_ref_id = ?2,
+                         triage_by = NULL
                      WHERE id = ?1 AND triaged_at IS NULL",
                     params![id, task_id],
                 )?;
@@ -409,13 +452,15 @@ fn undo_in(
             // 清三个字段才算回到待处理；`triage_outcome` 的条件保证只撤销同一种结果。
             InboxAction::Dismiss => connection.execute(
                 "UPDATE inbox_messages
-                 SET triaged_at = NULL, triage_outcome = NULL, triage_ref_id = NULL
+                 SET triaged_at = NULL, triage_outcome = NULL, triage_ref_id = NULL,
+                     triage_by = NULL
                  WHERE id = ?1 AND triage_outcome = 'dismissed'",
                 [id],
             )?,
             InboxAction::Task => connection.execute(
                 "UPDATE inbox_messages
-                 SET triaged_at = NULL, triage_outcome = NULL, triage_ref_id = NULL
+                 SET triaged_at = NULL, triage_outcome = NULL, triage_ref_id = NULL,
+                     triage_by = NULL
                  WHERE id = ?1 AND triage_outcome = 'task'",
                 [id],
             )?,
@@ -469,6 +514,19 @@ fn resolve_scope_ids_in(connection: &Connection, scope: &InboxScope) -> DbResult
         .map_err(Into::into)
 }
 
+/// 入库前判存在：`ON CONFLICT` 不会告诉我们这次是插入还是更新。
+fn message_exists(connection: &Connection, source_id: &str, external_id: &str) -> DbResult<bool> {
+    connection
+        .query_row(
+            "SELECT 1 FROM inbox_messages WHERE source_id = ?1 AND external_id = ?2",
+            params![source_id, external_id],
+            |_| Ok(()),
+        )
+        .optional()
+        .map(|row| row.is_some())
+        .map_err(Into::into)
+}
+
 fn get_message(connection: &Connection, id: &str) -> DbResult<Option<InboxMessage>> {
     let result = connection
         .query_row(
@@ -498,6 +556,7 @@ fn raw_message(row: &Row<'_>) -> rusqlite::Result<RawMessage> {
         row.get(13)?,
         row.get(14)?,
         row.get(15)?,
+        row.get(16)?,
     ))
 }
 
@@ -520,6 +579,7 @@ fn decode_message(row: RawMessage) -> DbResult<InboxMessage> {
             .map(|value| parse_value(value, "triage outcome"))
             .transpose()?,
         triage_ref_id: row.13,
+        triage_by: row.16,
         related_kind: row.14,
         related_id: row.15,
     })

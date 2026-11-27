@@ -1,8 +1,9 @@
-use super::{Database, MANUAL_SOURCE_ID};
+use super::{Database, DbError, MANUAL_SOURCE_ID};
 use crate::domain::{
     CaptureKind, CapturePageQuery, CaptureSort, CaptureSummary, EmailTls, GithubRelease,
-    GithubThread, GithubThreadComment, InboxAction, InboxPageQuery, InboxScope, InboxSourceKind,
-    InboxTab, KeysetCursor, NewCapture, NewInboxMessage, NewSyncRun, NewTask, ReadBackAction,
+    GithubThread, GithubThreadComment, InboxAction, InboxPageQuery, InboxRuleAction,
+    InboxRuleFilter, InboxRuleForm, InboxRulePreview, InboxScope, InboxSourceKind, InboxTab,
+    KeysetCursor, NewCapture, NewInboxMessage, NewSyncRun, NewTask, ReadBackAction,
     ReadBackErrorKind, SyncRunStatus, TaskPageQuery, TaskStatus, ThreadKind, ThreadQuery,
     ThreadRelationship, ThreadState, ThreadSummary, TriageOutcome,
 };
@@ -817,7 +818,8 @@ fn inbox_repository_dedupes_messages_and_converts_once() {
             "被 @ 了",
             "2026-11-26T01:00:00.000Z",
         ))
-        .unwrap();
+        .unwrap()
+        .message;
     assert_eq!(created.triaged_at, None);
 
     let updated = messages
@@ -826,7 +828,8 @@ fn inbox_repository_dedupes_messages_and_converts_once() {
             "被 @ 了（更新）",
             "2026-11-26T02:00:00.000Z",
         ))
-        .unwrap();
+        .unwrap()
+        .message;
     assert_eq!(updated.id, created.id, "the same key updates in place");
     assert_eq!(updated.title, "被 @ 了（更新）");
     assert_eq!(messages.counts(None, None).unwrap().all, 1);
@@ -838,7 +841,8 @@ fn inbox_repository_dedupes_messages_and_converts_once() {
             "被 @ 了（更新）",
             "2026-11-26T02:00:00.000Z",
         ))
-        .unwrap();
+        .unwrap()
+        .message;
     assert!(
         unchanged.read_at.is_some(),
         "a sync without new progress keeps the message read"
@@ -880,7 +884,8 @@ fn inbox_repository_dedupes_messages_and_converts_once() {
             "可以忽略",
             "2026-11-26T03:00:00.000Z",
         ))
-        .unwrap();
+        .unwrap()
+        .message;
     let dismissed = messages.dismiss(&dismissed.id).unwrap().unwrap();
     assert_eq!(dismissed.triage_outcome, Some(TriageOutcome::Dismissed));
 
@@ -897,7 +902,8 @@ fn inbox_repository_dedupes_messages_and_converts_once() {
             "可以忽略（更新）",
             "2026-11-26T04:00:00.000Z",
         ))
-        .unwrap();
+        .unwrap()
+        .message;
     assert_eq!(
         refreshed.triage_outcome,
         Some(TriageOutcome::Dismissed),
@@ -915,24 +921,28 @@ fn inbox_scope_splits_the_tabs_and_counts_add_up() {
 
     let mention = messages
         .ingest(inbox_message("axis-1", "提及", "2026-11-26T01:00:00.000Z"))
-        .unwrap();
+        .unwrap()
+        .message;
     let dismissed = messages
         .ingest(inbox_message("axis-2", "忽略", "2026-11-26T02:00:00.000Z"))
-        .unwrap();
+        .unwrap()
+        .message;
     let converted = messages
         .ingest(inbox_message(
             "axis-3",
             "转待办",
             "2026-11-26T03:00:00.000Z",
         ))
-        .unwrap();
+        .unwrap()
+        .message;
     let release = messages
         .ingest(NewInboxMessage {
             source_id: github.id.clone(),
             category: "release".into(),
             ..inbox_message("axis-4", "发布", "2026-11-26T04:00:00.000Z")
         })
-        .unwrap();
+        .unwrap()
+        .message;
 
     messages.dismiss(&dismissed.id).unwrap();
     messages
@@ -1035,10 +1045,12 @@ fn inbox_actions_only_count_the_rows_they_change_and_can_be_undone() {
     let messages = db.inbox_messages();
     let first = messages
         .ingest(inbox_message("act-1", "第一条", "2026-11-26T01:00:00.000Z"))
-        .unwrap();
+        .unwrap()
+        .message;
     let second = messages
         .ingest(inbox_message("act-2", "第二条", "2026-11-26T02:00:00.000Z"))
-        .unwrap();
+        .unwrap()
+        .message;
 
     let read = messages
         .apply_action(InboxAction::Read, &[first.id.clone(), second.id.clone()])
@@ -1117,7 +1129,7 @@ fn inbox_scope_actions_guard_on_the_expected_count() {
     db.inbox_sources().ensure_manual().unwrap();
     let messages = db.inbox_messages();
     for (index, category) in ["mention", "mention", "release"].iter().enumerate() {
-        messages
+        let _ = messages
             .ingest(NewInboxMessage {
                 category: (*category).into(),
                 ..inbox_message(
@@ -1316,7 +1328,8 @@ fn task_projection_resolves_the_inbox_source_kind_without_a_second_query() {
                 "2026-11-26T10:00:00Z",
             )
         })
-        .unwrap();
+        .unwrap()
+        .message;
 
     let tasks = db.tasks();
     let from_inbox = tasks
@@ -1358,7 +1371,8 @@ fn read_back_queue_retries_then_blocks_and_follows_token_changes() {
             source_id: source.id.clone(),
             ..inbox_message("9001", "通知", "2026-11-26T10:00:00Z")
         })
-        .unwrap();
+        .unwrap()
+        .message;
 
     let queue = db.inbox_read_back();
     queue
@@ -1447,14 +1461,16 @@ fn email_read_back_rows_keep_uid_metadata_and_are_isolated_from_the_token() {
             payload_json: Some(r#"{"uid":42,"uidValidity":7}"#.into()),
             ..inbox_message("m1@example.com", "邮件", "2026-11-26T10:00:00Z")
         })
-        .unwrap();
+        .unwrap()
+        .message;
     // 历史数据没有 UID：入队时会静默跳过。
     let legacy = messages
         .ingest(NewInboxMessage {
             source_id: id.clone(),
             ..inbox_message("m2@example.com", "历史邮件", "2026-11-26T09:00:00Z")
         })
-        .unwrap();
+        .unwrap()
+        .message;
 
     let queue = db.inbox_read_back();
     queue.enqueue_email_seen(&message.id).unwrap();
@@ -1544,7 +1560,8 @@ fn email_accounts_round_trip_config_and_survive_soft_delete() {
             source_id: id.clone(),
             ..inbox_message("mail-1", "一封邮件", "2026-11-26T10:00:00Z")
         })
-        .unwrap();
+        .unwrap()
+        .message;
     sources.set_enabled(&id, false).unwrap();
     assert_eq!(sources.count_configured_email().unwrap(), 0);
     assert!(db.inbox_messages().get(&message.id).unwrap().is_some());
@@ -1573,4 +1590,222 @@ fn email_accounts_round_trip_config_and_survive_soft_delete() {
         EmailConfig::parse(&sources.config(&other).unwrap().unwrap()),
         Some(other_config)
     );
+}
+
+fn rule_form(title_contains: Option<&str>, category: Option<&str>) -> InboxRuleForm {
+    InboxRuleForm {
+        id: None,
+        filter: InboxRuleFilter {
+            source_id: None,
+            category: category.map(Into::into),
+            actor_contains: None,
+            title_contains: title_contains.map(Into::into),
+        },
+        action: InboxRuleAction::Dismiss,
+        enabled: true,
+    }
+}
+
+/// 规则本身：空条件在写入口就被拒绝，创建顺序决定「谁先命中」。
+#[test]
+fn inbox_rules_reject_empty_conditions_and_list_in_creation_order() {
+    let db = Database::in_memory().unwrap();
+    let rules = db.inbox_rules();
+
+    let error = rules.upsert(rule_form(None, None)).unwrap_err();
+    assert!(
+        matches!(error, DbError::InvalidData(_)),
+        "an empty rule would swallow the whole inbox"
+    );
+
+    let first = rules.upsert(rule_form(Some("Dependabot"), None)).unwrap();
+    let second = rules.upsert(rule_form(Some("CI"), None)).unwrap();
+    assert_eq!(
+        rules
+            .list()
+            .unwrap()
+            .iter()
+            .map(|rule| rule.id.clone())
+            .collect::<Vec<_>>(),
+        vec![first.id.clone(), second.id.clone()],
+        "the list keeps creation order even inside the same millisecond"
+    );
+    assert_eq!((first.hit_count, first.enabled), (0, true));
+
+    // 更新只改条件、动作与开关，命中统计保留。
+    let updated = rules
+        .upsert(InboxRuleForm {
+            id: Some(first.id.clone()),
+            filter: InboxRuleFilter {
+                title_contains: Some("Renovate".into()),
+                ..InboxRuleFilter::default()
+            },
+            action: InboxRuleAction::Read,
+            enabled: false,
+        })
+        .unwrap();
+    assert_eq!(updated.title_contains.as_deref(), Some("Renovate"));
+    assert_eq!(updated.action, InboxRuleAction::Read);
+    assert!(!updated.enabled);
+    assert_eq!(
+        rules.enabled().unwrap().len(),
+        1,
+        "only enabled rules are loaded when ingesting"
+    );
+
+    assert!(rules.delete(&first.id).unwrap());
+    assert!(
+        !rules.delete(&first.id).unwrap(),
+        "deleting twice reports no row"
+    );
+    assert_eq!(rules.list().unwrap().len(), 1);
+}
+
+/// 规则执行：动作与人工一致，额外记下「规则」与命中次数，撤销后清干净。
+#[test]
+fn applying_a_rule_marks_the_message_and_counts_one_hit() {
+    let db = Database::in_memory().unwrap();
+    let rules = db.inbox_rules();
+    db.inbox_sources().ensure_manual().unwrap();
+    let rule = rules.upsert(rule_form(Some("Dependabot"), None)).unwrap();
+    let messages = db.inbox_messages();
+    let message = messages
+        .ingest(inbox_message(
+            "rule-1",
+            "Dependabot 升级了 serde",
+            "2026-11-26T01:00:00.000Z",
+        ))
+        .unwrap()
+        .message;
+
+    let result = messages
+        .apply_rule(&rule.id, InboxAction::Dismiss, &message.id)
+        .unwrap();
+    assert_eq!(result.applied_ids, vec![message.id.clone()]);
+
+    let triaged = messages.get(&message.id).unwrap().unwrap();
+    assert_eq!(triaged.triage_outcome, Some(TriageOutcome::Dismissed));
+    assert_eq!(
+        triaged.triage_by.as_deref(),
+        Some("rule"),
+        "the message is marked as handled by a rule"
+    );
+    let hit = rules.get(&rule.id).unwrap().unwrap();
+    assert_eq!(hit.hit_count, 1);
+    assert!(hit.last_hit_at.is_some());
+
+    // 重复命中一条已经处理过的消息不算一次命中。
+    let repeat = messages
+        .apply_rule(&rule.id, InboxAction::Dismiss, &message.id)
+        .unwrap();
+    assert!(repeat.applied_ids.is_empty());
+    assert_eq!(rules.get(&rule.id).unwrap().unwrap().hit_count, 1);
+
+    // 撤销回到待处理，「规则」标记一并清掉；再人工忽略不会留下旧标记。
+    messages
+        .undo_action(InboxAction::Dismiss, &only(&message.id), &[])
+        .unwrap();
+    assert_eq!(messages.get(&message.id).unwrap().unwrap().triage_by, None);
+    messages.dismiss(&message.id).unwrap();
+    assert_eq!(messages.get(&message.id).unwrap().unwrap().triage_by, None);
+
+    // 标已读不改处理状态，也不写「规则」标记；命中数照常累加。
+    let unread = messages
+        .ingest(inbox_message(
+            "rule-2",
+            "Dependabot 升级了 axum",
+            "2026-11-26T02:00:00.000Z",
+        ))
+        .unwrap()
+        .message;
+    messages
+        .apply_rule(&rule.id, InboxAction::Read, &unread.id)
+        .unwrap();
+    let read = messages.get(&unread.id).unwrap().unwrap();
+    assert!(read.read_at.is_some());
+    assert_eq!(read.triaged_at, None, "marking read is not triage");
+    assert_eq!(read.triage_by, None);
+    assert_eq!(rules.get(&rule.id).unwrap().unwrap().hit_count, 2);
+}
+
+/// 试跑：只算最近 14 天，命中数与「真正会被改动」的待处理数分开报。
+#[test]
+fn rule_preview_splits_recent_matches_from_pending_ones() {
+    let db = Database::in_memory().unwrap();
+    db.inbox_sources().ensure_manual().unwrap();
+    let messages = db.inbox_messages();
+
+    let pending = messages
+        .ingest(inbox_message(
+            "preview-1",
+            "Dependabot 升级了 serde",
+            "2026-11-26T01:00:00.000Z",
+        ))
+        .unwrap()
+        .message;
+    let dismissed = messages
+        .ingest(inbox_message(
+            "preview-2",
+            "Dependabot 升级了 vite",
+            "2026-11-26T02:00:00.000Z",
+        ))
+        .unwrap()
+        .message;
+    messages
+        .ingest(inbox_message(
+            "preview-3",
+            "Renovate 升级了 react",
+            "2026-11-26T03:00:00.000Z",
+        ))
+        .unwrap();
+    // 14 天以前的命中不计入试跑窗口：历史积压不应该把数字放大。
+    messages
+        .ingest(inbox_message(
+            "preview-4",
+            "Dependabot 升级了 tokio",
+            "2026-10-01T00:00:00.000Z",
+        ))
+        .unwrap();
+    messages.dismiss(&dismissed.id).unwrap();
+
+    let preview = db
+        .inbox_rules()
+        .preview(&InboxRuleFilter {
+            title_contains: Some("dependabot".into()),
+            ..InboxRuleFilter::default()
+        })
+        .unwrap();
+    assert_eq!(
+        (preview.match_count, preview.pending_count),
+        (2, 1),
+        "match count includes handled rows, pending count is what a rule would touch"
+    );
+    assert_eq!(
+        preview.sample_titles,
+        vec!["Dependabot 升级了 serde".to_owned()],
+        "samples only list rows the rule would change"
+    );
+
+    assert_eq!(
+        db.inbox_rules()
+            .preview(&InboxRuleFilter::default())
+            .unwrap(),
+        InboxRulePreview::default(),
+        "an empty filter previews nothing instead of everything"
+    );
+
+    // 分类条件同样是「且」：命中题目但分类不符就不算。
+    let release_only = db
+        .inbox_rules()
+        .preview(&InboxRuleFilter {
+            title_contains: Some("Dependabot".into()),
+            category: Some("release".into()),
+            ..InboxRuleFilter::default()
+        })
+        .unwrap();
+    assert_eq!(
+        (release_only.match_count, release_only.pending_count),
+        (0, 0)
+    );
+    assert!(pending.triaged_at.is_none());
 }

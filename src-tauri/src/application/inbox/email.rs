@@ -466,11 +466,8 @@ fn sync_account(
     let synced_at = now_iso();
     let mut ingested_count = 0usize;
     for parsed in &fetched.mails {
-        if database
-            .inbox_messages()
-            .ingest(to_new_message(&account.id, parsed, &synced_at))
-            .is_err()
-        {
+        // 走应用层入库：新邮件会立刻过一遍规则，已入库的邮件只做更新。
+        if super::ingest(database, to_new_message(&account.id, parsed, &synced_at)).is_err() {
             let _ = database
                 .inbox_sources()
                 .mark_failed(&account.id, "无法写入本地收件箱");

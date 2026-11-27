@@ -39,6 +39,7 @@ import {
   describeServer,
   suggestServer,
 } from "./emailAccounts";
+import InboxRulesSection from "./InboxRulesSection";
 
 function Section({
   title,
@@ -780,6 +781,8 @@ function SettingsPage() {
                 </div>
               )}
             </Section>
+
+            <InboxRulesSection />
 
             <Section
               title="关注的仓库"

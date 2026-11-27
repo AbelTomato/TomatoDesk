@@ -1,7 +1,7 @@
-//! 收件箱应用服务：入库、已读、忽略与转为待办。
+//! 收件箱应用服务：入库、规则、已读、忽略与转为待办。
 //!
-//! 处理动作全部是人工触发，收件箱不会自动流入待办或随手记。
-//! 连接器只负责入库，不碰处理结果。
+//! 处理动作默认全部由人触发；规则是唯一的例外，而且只对新入库的消息生效，
+//! 只做「标为已读」与「忽略」，不会自动生成待办或随手记。
 
 pub(crate) mod email;
 pub(crate) mod github;
@@ -9,15 +9,54 @@ pub(crate) mod read_back;
 
 use crate::{
     domain::{
-        InboxAction, InboxActionResult, InboxMessage, InboxScope, NewInboxMessage, Task,
-        TriageOutcome,
+        InboxAction, InboxActionResult, InboxMessage, InboxRule, InboxScope, IngestOutcome,
+        NewInboxMessage, Task, TriageOutcome,
     },
     infrastructure::db::{Database, DbError, DbResult},
 };
 
 /// 入库前先保证来源存在；开发用 ingest 固定复用 `source-manual`。
-pub(crate) fn ingest(database: &Database, message: NewInboxMessage) -> DbResult<InboxMessage> {
-    database.inbox_messages().ingest(message)
+///
+/// 新建的消息立刻交给规则判断一次：命中第一条启用的规则就执行它的动作。
+/// 重新同步的老消息（`created == false`）不跑规则 —— 它们是被人看过、
+/// 甚至处理过的，规则再把结果改回去就变成「撤销之后又被收回去」。
+pub(crate) fn ingest(database: &Database, message: NewInboxMessage) -> DbResult<IngestOutcome> {
+    let mut outcome = database.inbox_messages().ingest(message)?;
+    if outcome.created {
+        apply_first_rule(database, &mut outcome)?;
+    }
+    Ok(outcome)
+}
+
+/// 按 `created_at` 顺序取第一条命中的规则并执行。
+///
+/// 命中条件为空、或动作没有真正改动任何行（例如消息已经被别的路径处理）时
+/// 什么都不做：规则是「尽力而为」的自动处理，不该让入库失败。
+fn apply_first_rule(database: &Database, outcome: &mut IngestOutcome) -> DbResult<()> {
+    let Some(rule) = first_matching_rule(database, &outcome.message)? else {
+        return Ok(());
+    };
+    let action = rule.action.to_action();
+    let result = database
+        .inbox_messages()
+        .apply_rule(&rule.id, action, &outcome.message.id)?;
+    if result.applied_ids.is_empty() {
+        return Ok(());
+    }
+    // 规则标为已读等同于人工标已读：远端同步照常入队，不做第二套语义。
+    sync_read_back(database, action, &result.applied_ids)?;
+    if let Some(updated) = database.inbox_messages().get(&outcome.message.id)? {
+        outcome.message = updated;
+    }
+    Ok(())
+}
+
+fn first_matching_rule(database: &Database, message: &InboxMessage) -> DbResult<Option<InboxRule>> {
+    Ok(database
+        .inbox_rules()
+        .enabled()?
+        .into_iter()
+        .find(|rule| rule.matches(message)))
 }
 
 /// 按 id 批量执行一个动作，单条与批量走同一条路径。

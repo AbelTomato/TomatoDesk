@@ -20,8 +20,9 @@ pub use github::{
 pub use inbox::{
     EmailAccountProbe, EmailAccountStatus, EmailTls, InboxAction, InboxActionResult, InboxCounts,
     InboxMessage, InboxMessageCursor, InboxPage, InboxPageQuery, InboxReadBack,
-    InboxReadBackStatus, InboxScope, InboxSource, InboxSourceKind, InboxTab, NewInboxMessage,
-    ReadBackAction, ReadBackErrorKind, ReadBackStatus, TriageOutcome,
+    InboxReadBackStatus, InboxRule, InboxRuleAction, InboxRuleFilter, InboxRuleForm,
+    InboxRulePreview, InboxScope, InboxSource, InboxSourceKind, InboxTab, IngestOutcome,
+    NewInboxMessage, ReadBackAction, ReadBackErrorKind, ReadBackStatus, TriageOutcome,
 };
 pub use sync_run::{NewSyncRun, SyncRun, SyncRunStatus};
 pub use tag::Tag;

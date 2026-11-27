@@ -3,8 +3,8 @@ use tauri::State;
 use crate::{
     application,
     domain::{
-        InboxActionResult, InboxCounts, InboxMessage, InboxPage, InboxReadBackStatus, InboxSource,
-        ReadBackAction, Task,
+        InboxActionResult, InboxCounts, InboxMessage, InboxPage, InboxReadBackStatus, InboxRule,
+        InboxRulePreview, InboxSource, ReadBackAction, Task,
     },
     infrastructure::{db::Database, secrets},
 };
@@ -12,8 +12,8 @@ use crate::{
 use super::{
     dto::{
         ApplyInboxActionInput, CountInboxMessagesInput, IdInput, InboxActionTarget,
-        IngestInboxMessageInput, ListInboxMessagesInput, UndoInboxActionInput, parse_input,
-        parse_optional_input,
+        InboxRuleFilterInput, IngestInboxMessageInput, ListInboxMessagesInput, SaveInboxRuleInput,
+        UndoInboxActionInput, parse_input, parse_optional_input,
     },
     error::{CommandError, CommandResult},
 };
@@ -120,6 +120,7 @@ pub(super) fn convert_inbox_message_to_task_in(
 }
 
 /// 开发与测试用：先确保人工来源存在，再按 `(source_id, external_id)` 去重写入。
+/// 命中的规则会在这里就生效，返回值是规则处理之后的最终状态。
 pub(super) fn ingest_inbox_message_in(
     database: &Database,
     input: IngestInboxMessageInput,
@@ -129,7 +130,9 @@ pub(super) fn ingest_inbox_message_in(
         .ensure_manual()
         .map_err(CommandError::from)?;
     let message = input.validate(source.id)?;
-    application::inbox::ingest(database, message).map_err(Into::into)
+    application::inbox::ingest(database, message)
+        .map(|outcome| outcome.message)
+        .map_err(Into::into)
 }
 
 pub(super) fn get_inbox_read_back_status_in(
@@ -139,6 +142,44 @@ pub(super) fn get_inbox_read_back_status_in(
         .inbox_read_back()
         .status()
         .map_err(CommandError::from)
+}
+
+/// 设置页的规则列表：按创建顺序，禁用的一起返回（列表里要能看到并重新打开）。
+pub(super) fn list_inbox_rules_in(database: &Database) -> CommandResult<Vec<InboxRule>> {
+    database.inbox_rules().list().map_err(Into::into)
+}
+
+pub(super) fn save_inbox_rule_in(
+    database: &Database,
+    input: SaveInboxRuleInput,
+) -> CommandResult<InboxRule> {
+    let form = input.validate()?;
+    database.inbox_rules().upsert(form).map_err(Into::into)
+}
+
+/// 删除后直接回剩余列表：前端不必再发一次请求。
+pub(super) fn delete_inbox_rule_in(
+    database: &Database,
+    input: IdInput,
+) -> CommandResult<Vec<InboxRule>> {
+    let input = input.validate()?;
+    if !database
+        .inbox_rules()
+        .delete(&input.id)
+        .map_err(CommandError::from)?
+    {
+        return Err(CommandError::not_found("inbox rule"));
+    }
+    database.inbox_rules().list().map_err(Into::into)
+}
+
+/// 试跑：只统计最近 14 天还没处理的消息，不改任何数据。
+pub(super) fn preview_inbox_rule_in(
+    database: &Database,
+    input: InboxRuleFilterInput,
+) -> CommandResult<InboxRulePreview> {
+    let filter = input.into_filter()?;
+    database.inbox_rules().preview(&filter).map_err(Into::into)
 }
 
 /// 手动重试：把 blocked 行放回队列。
@@ -265,4 +306,35 @@ pub fn get_inbox_read_back_status(
 #[tauri::command]
 pub fn retry_inbox_read_back(database: State<'_, Database>) -> CommandResult<InboxReadBackStatus> {
     retry_inbox_read_back_in(&database)
+}
+
+#[tauri::command]
+pub fn list_inbox_rules(database: State<'_, Database>) -> CommandResult<Vec<InboxRule>> {
+    list_inbox_rules_in(&database)
+}
+
+/// 保存规则：没有 `id` 是新建，有 `id` 是更新。空条件在这里被拒绝。
+#[tauri::command]
+pub fn save_inbox_rule(
+    database: State<'_, Database>,
+    input: Option<serde_json::Value>,
+) -> CommandResult<InboxRule> {
+    save_inbox_rule_in(&database, parse_input(input)?)
+}
+
+#[tauri::command]
+pub fn delete_inbox_rule(
+    database: State<'_, Database>,
+    input: Option<serde_json::Value>,
+) -> CommandResult<Vec<InboxRule>> {
+    delete_inbox_rule_in(&database, parse_input(input)?)
+}
+
+/// 试跑：只看最近 14 天还有多少条会被命中，不写任何数据。
+#[tauri::command]
+pub fn preview_inbox_rule(
+    database: State<'_, Database>,
+    input: Option<serde_json::Value>,
+) -> CommandResult<InboxRulePreview> {
+    preview_inbox_rule_in(&database, parse_optional_input(input)?)
 }

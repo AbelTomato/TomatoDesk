@@ -495,7 +495,8 @@ mod tests {
         let message = database
             .inbox_messages()
             .ingest(sample_message(&saved.id))
-            .unwrap();
+            .unwrap()
+            .message;
 
         assert_eq!(list_email_accounts_in(&database).unwrap().len(), 1);
 
