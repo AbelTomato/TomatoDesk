@@ -176,6 +176,13 @@ impl InboxSourceRepository {
         })
     }
 
+    /// 删除账户时清空配置。写 `{}` 而不是 `''` 或 `NULL`：
+    /// 列上的 `CHECK (json_valid(config_json))` 会拒绝空串，`NULL` 又会让按 `String` 取列的
+    /// `list_email` 报 `InvalidColumnType`；空对象两者都满足，且 `EmailConfig::parse` 判为未配置。
+    pub fn clear_config(&self, id: &str) -> DbResult<()> {
+        self.save_config(id, "{}")
+    }
+
     /// 软停用：不删来源行，避免 `inbox_messages` 的 `ON DELETE CASCADE` 把历史消息一起清掉。
     pub fn set_enabled(&self, id: &str, enabled: bool) -> DbResult<()> {
         self.database.with_connection(|connection| {

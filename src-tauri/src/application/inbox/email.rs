@@ -15,7 +15,7 @@ use tauri::Emitter;
 
 use super::github::{INBOX_SYNC_EVENT, InboxSyncSummary};
 use crate::{
-    domain::NewInboxMessage,
+    domain::{EmailAccountProbe, NewInboxMessage},
     infrastructure::{
         db::{Database, DbError},
         email::{
@@ -212,6 +212,28 @@ impl MailFetcher for ImapFetcher {
     }
 }
 
+/// 「测试连接」的替换点：设置页只关心结果，测试用假实现避免每次连真实邮箱。
+pub(crate) trait MailProber: Send + Sync {
+    fn probe(
+        &self,
+        account: &EmailAccount,
+        password: &str,
+    ) -> Result<EmailAccountProbe, EmailError>;
+}
+
+/// 生产实现：连接 → 登录 → `EXAMINE`，只读一次邮箱概况。
+pub(crate) struct ImapProber;
+
+impl MailProber for ImapProber {
+    fn probe(
+        &self,
+        account: &EmailAccount,
+        password: &str,
+    ) -> Result<EmailAccountProbe, EmailError> {
+        client::probe(account, password)
+    }
+}
+
 /// 一轮里单个账户的结果，用来拼 `inbox-sync-updated` 的载荷。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AccountOutcome {
@@ -280,7 +302,30 @@ pub(crate) async fn sync_all(
     fetcher: &Arc<dyn MailFetcher>,
     backoff: &mut Backoff,
 ) -> Vec<Option<InboxSyncSummary>> {
-    let Ok(accounts) = enabled_accounts(database) else {
+    sync_selected(database, fetcher, backoff, None).await
+}
+
+/// 保存账户后立刻同步这一个账户，界面不用等下一次十分钟轮询。
+///
+/// 用独立的退避表：用户刚刚改过配置或授权码，上一次失败不应该拦住这次重试。
+pub fn sync_account_soon(database: Database, app: tauri::AppHandle, source_id: String) {
+    tauri::async_runtime::spawn(async move {
+        let fetcher: Arc<dyn MailFetcher> = Arc::new(ImapFetcher);
+        let mut backoff = Backoff::default();
+        for summary in sync_selected(&database, &fetcher, &mut backoff, Some(&source_id)).await {
+            let _ = app.emit(INBOX_SYNC_EVENT, summary);
+        }
+    });
+}
+
+/// `only` 是可选的单账户过滤：`None` 表示整轮全部启用账户。
+async fn sync_selected(
+    database: &Database,
+    fetcher: &Arc<dyn MailFetcher>,
+    backoff: &mut Backoff,
+    only: Option<&str>,
+) -> Vec<Option<InboxSyncSummary>> {
+    let Ok(accounts) = enabled_accounts(database, only) else {
         return Vec::new();
     };
 
@@ -413,12 +458,15 @@ fn sync_account(
 }
 
 /// 启用且配置可解析的账户。配置损坏时跳过该账户，而不是让整轮同步失败。
-fn enabled_accounts(database: &Database) -> Result<Vec<EmailAccount>, DbError> {
+///
+/// 已删除的账户 `config_json` 是空串，`EmailConfig::parse` 返回 `None`，这里自然过滤掉。
+fn enabled_accounts(database: &Database, only: Option<&str>) -> Result<Vec<EmailAccount>, DbError> {
     Ok(database
         .inbox_sources()
         .list_email()?
         .into_iter()
         .filter(|row| row.source.enabled)
+        .filter(|row| only.is_none_or(|id| row.source.id == id))
         .filter_map(|row| {
             EmailConfig::parse(&row.config_json)
                 .map(|config| EmailAccount::from_config(row.source.id, config))

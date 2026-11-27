@@ -1,6 +1,7 @@
 mod app;
 mod captures;
 mod dto;
+mod email;
 mod error;
 mod export;
 mod github;
@@ -15,6 +16,7 @@ mod tests;
 
 pub use app::*;
 pub use captures::*;
+pub use email::*;
 pub use export::*;
 pub use github::*;
 pub use inbox::*;

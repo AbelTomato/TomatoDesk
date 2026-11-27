@@ -4,7 +4,7 @@ use serde_json::Value;
 use crate::{
     commands::error::{CommandError, CommandResult},
     domain::{
-        CaptureCursor, CaptureKind, CapturePageQuery, CaptureSort, InboxMessageCursor,
+        CaptureCursor, CaptureKind, CapturePageQuery, CaptureSort, EmailTls, InboxMessageCursor,
         InboxPageQuery, NewInboxMessage, TaskCursor, TaskPageQuery, TaskStatus, ThreadKind,
         ThreadQuery, ThreadRelationship, ThreadState,
     },
@@ -26,6 +26,10 @@ const MAX_BODY_LENGTH: usize = 65_536;
 const MAX_URL_LENGTH: usize = 4_096;
 const MAX_ACTOR_LENGTH: usize = 256;
 const MAX_PAYLOAD_LENGTH: usize = 65_536;
+const MAX_EMAIL_ADDRESS_LENGTH: usize = 320;
+const MAX_EMAIL_HOST_LENGTH: usize = 253;
+const MAX_EMAIL_PASSWORD_LENGTH: usize = 512;
+const MAX_MAILBOX_LENGTH: usize = 128;
 const DEFAULT_PAGE_SIZE: u32 = 50;
 const MAX_PAGE_SIZE: u32 = 200;
 
@@ -468,6 +472,81 @@ impl IngestInboxMessageInput {
             related_kind: optional_text("relatedKind", self.related_kind, MAX_CATEGORY_LENGTH)?,
             related_id: optional_text("relatedId", self.related_id, MAX_ID_LENGTH)?,
             payload_json,
+        })
+    }
+}
+
+/// 邮箱账户入参。`password` 选填：编辑端口 / 加密方式时留空表示沿用已保存的授权码，
+/// 新增账户或要换授权码时才填。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EmailAccountInput {
+    pub address: String,
+    pub password: Option<String>,
+    pub host: String,
+    /// 缺省时按加密方式给 993 / 143。
+    pub port: Option<u16>,
+    pub tls: Option<EmailTls>,
+    pub mailbox: Option<String>,
+}
+
+/// 校验后的账户表单：端口已补默认值，其余字段已去空白并按上限截断校验。
+#[derive(Debug, Clone)]
+pub(super) struct EmailAccountForm {
+    pub address: String,
+    pub password: Option<String>,
+    pub host: String,
+    pub port: u16,
+    pub tls: EmailTls,
+    pub mailbox: Option<String>,
+}
+
+impl EmailAccountInput {
+    pub(super) fn validate(self) -> CommandResult<EmailAccountForm> {
+        let address = required_text("address", self.address, MAX_EMAIL_ADDRESS_LENGTH)?;
+        if !address.contains('@') || address.contains(char::is_whitespace) {
+            return Err(CommandError::validation(
+                "address must be an email address without spaces",
+            ));
+        }
+
+        let host = required_text("host", self.host, MAX_EMAIL_HOST_LENGTH)?;
+        // 只收主机名：带协议前缀、端口或路径的输入会让连接层拿到一个不存在的域名。
+        if host.contains(char::is_whitespace)
+            || host.contains("://")
+            || host.contains(':')
+            || host.contains('/')
+        {
+            return Err(CommandError::validation(
+                "host must be a plain host name, without scheme or port",
+            ));
+        }
+
+        let tls = self.tls.unwrap_or_default();
+        let port = self.port.unwrap_or_else(|| tls.default_port());
+        if port == 0 {
+            return Err(CommandError::validation("port must be between 1 and 65535"));
+        }
+
+        // 授权码内部可能带空格，只去首尾空白；全空白视为没填。
+        let password = optional_text("password", self.password, MAX_EMAIL_PASSWORD_LENGTH)?;
+        let mailbox = optional_text("mailbox", self.mailbox, MAX_MAILBOX_LENGTH)?;
+        if mailbox
+            .as_deref()
+            .is_some_and(|value| value.contains(char::is_control))
+        {
+            return Err(CommandError::validation(
+                "mailbox cannot contain control characters",
+            ));
+        }
+
+        Ok(EmailAccountForm {
+            address,
+            password,
+            host,
+            port,
+            tls,
+            mailbox,
         })
     }
 }

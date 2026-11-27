@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use crate::infrastructure::db::DbError;
+use crate::infrastructure::{db::DbError, email::EmailError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -65,6 +65,20 @@ impl From<DbError> for CommandError {
                 code: CommandErrorCode::Internal,
                 message: "database operation failed".into(),
             },
+        }
+    }
+}
+
+/// 邮件错误按「用户能自己修」分类：连不上、登录失败、文件夹不存在都是入参或账户状态问题；
+/// 协议异常才归内部错误。文案直接复用 `EmailError` 的中文说明。
+impl From<EmailError> for CommandError {
+    fn from(error: EmailError) -> Self {
+        let message = error.to_string();
+        match error {
+            EmailError::Unreachable(_) | EmailError::Auth(_) | EmailError::Mailbox(_) => {
+                Self::validation(message)
+            }
+            EmailError::Protocol(_) => Self::internal(message),
         }
     }
 }
