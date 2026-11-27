@@ -6,6 +6,9 @@ import type {
   CapturePageInput,
   CaptureSummary,
   CreateTaskInput,
+  EmailAccountInput,
+  EmailAccountProbe,
+  EmailAccountStatus,
   GithubRelease,
   GithubRepo,
   GithubSyncRun,
@@ -292,14 +295,24 @@ const inboxSources: InboxSource[] = [
     updatedAt: minutesAgo(12),
   },
   {
-    id: "source-mail",
+    id: "source-email-qq",
     kind: "email",
-    name: "工作邮箱",
+    name: "abeltomato@qq.com",
     enabled: true,
-    lastSyncedAt: hoursAgo(3),
+    lastSyncedAt: minutesAgo(9),
     lastError: null,
     createdAt: daysAgo(21),
-    updatedAt: hoursAgo(3),
+    updatedAt: minutesAgo(9),
+  },
+  {
+    id: "source-email-163",
+    kind: "email",
+    name: "abeltomato@163.com",
+    enabled: true,
+    lastSyncedAt: hoursAgo(1),
+    lastError: "登录失败，请确认已开启 IMAP 并使用授权码。",
+    createdAt: daysAgo(14),
+    updatedAt: hoursAgo(1),
   },
   {
     id: "source-manual",
@@ -406,16 +419,34 @@ const messages: InboxMessage[] = [
   },
   {
     id: "message-6",
-    sourceId: "source-mail",
+    sourceId: "source-email-qq",
     externalId: "mail:inbox:771",
     category: "mail",
     title: "下周的设计评审挪到周四 15:00",
     summary: "议题不变，会议室换到 5 楼小会议室。",
     body: "各位：\n\n下周的设计评审挪到周四 15:00，议题不变，会议室换到 5 楼小会议室。\n\n谢谢",
     url: null,
-    actor: "组织者",
+    actor: "组织者 <organizer@example.com>",
     occurredAt: hoursAgo(9),
     readAt: hoursAgo(8),
+    triagedAt: null,
+    triageOutcome: null,
+    triageRefId: null,
+    relatedKind: null,
+    relatedId: null,
+  },
+  {
+    id: "message-7",
+    sourceId: "source-email-163",
+    externalId: "uid:1:42",
+    category: "mail",
+    title: "新设备登录提醒",
+    summary: "你的账号于 11 月 27 日在 Windows 桌面端登录，若非本人操作请及时修改授权码。",
+    body: "你的账号于 11 月 27 日 09:12 在 Windows 桌面端登录。\n\n登录地点：上海\n设备：Windows 11 / TomatoDesk\n\n若非本人操作，请及时修改授权码并检查登录记录。",
+    url: null,
+    actor: "网易邮箱团队 <service@163.com>",
+    occurredAt: hoursAgo(2),
+    readAt: null,
     triagedAt: null,
     triageOutcome: null,
     triageRefId: null,
@@ -485,6 +516,105 @@ const convertInboxMessage = (id: string): Task => {
   message.triageRefId = created.id;
   message.readAt = message.readAt ?? nowIso();
   return { ...created };
+};
+
+/*
+ * 邮箱账户在预览模式里也是可变的：新增、编辑、删除都会改这份列表与 `inboxSources`，
+ * 设置页与收件箱来源栏才能像真实后端一样联动。
+ */
+const emailAccounts: EmailAccountStatus[] = [
+  {
+    id: "source-email-qq",
+    address: "abeltomato@qq.com",
+    host: "imap.qq.com",
+    port: 993,
+    tls: "implicit",
+    mailbox: "INBOX",
+    enabled: true,
+    lastSyncedAt: minutesAgo(9),
+    lastError: null,
+  },
+  {
+    id: "source-email-163",
+    address: "abeltomato@163.com",
+    host: "imap.163.com",
+    port: 993,
+    tls: "implicit",
+    mailbox: "INBOX",
+    enabled: true,
+    lastSyncedAt: hoursAgo(1),
+    lastError: "登录失败，请确认已开启 IMAP 并使用授权码。",
+  },
+];
+
+/** 试连桩：真实连接要授权码，预览里只校验地址与主机再回一个固定概况。 */
+const probeEmailAccount = (input: EmailAccountInput): EmailAccountProbe => {
+  if (!input.address.includes("@")) {
+    throw new Error("address must be an email address without spaces");
+  }
+  if (!input.host.trim()) throw new Error("host cannot be empty");
+  const known = emailAccounts.some(
+    (account) => account.address.toLowerCase() === input.address.trim().toLowerCase(),
+  );
+  return { mailboxTotal: known ? 1284 : 0, uidValidity: known ? 1_760_000_000 : 0 };
+};
+
+/** 与后端一致：地址 + 主机确定一个账户，重复保存是更新而不是新增。 */
+const saveEmailAccount = (input: EmailAccountInput): EmailAccountStatus => {
+  const address = input.address.trim();
+  const host = input.host.trim().toLowerCase();
+  const existing = emailAccounts.find(
+    (account) =>
+      account.address.toLowerCase() === address.toLowerCase() &&
+      account.host.toLowerCase() === host,
+  );
+  const status: EmailAccountStatus = {
+    id: existing?.id ?? `source-email-preview-${emailAccounts.length + 1}`,
+    address,
+    host,
+    port: input.port ?? (input.tls === "starttls" ? 143 : 993),
+    tls: input.tls ?? "implicit",
+    mailbox: input.mailbox?.trim() || "INBOX",
+    enabled: true,
+    lastSyncedAt: nowIso(),
+    lastError: null,
+  };
+  if (existing) Object.assign(existing, status);
+  else emailAccounts.push(status);
+
+  const source = inboxSources.find((entry) => entry.id === status.id);
+  if (source) {
+    source.name = status.address;
+    source.enabled = true;
+    source.lastError = null;
+    source.lastSyncedAt = status.lastSyncedAt;
+    source.updatedAt = status.lastSyncedAt ?? source.updatedAt;
+  } else {
+    inboxSources.push({
+      id: status.id,
+      kind: "email",
+      name: status.address,
+      enabled: true,
+      lastSyncedAt: status.lastSyncedAt,
+      lastError: null,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    });
+  }
+  return { ...status };
+};
+
+/** 软停用：账户从设置页消失，来源行与历史消息保留。 */
+const deleteEmailAccount = (id: string): EmailAccountStatus[] => {
+  const index = emailAccounts.findIndex((account) => account.id === id);
+  if (index < 0) throw new Error("email account not found");
+  emailAccounts.splice(index, 1);
+  const source = inboxSources.find((entry) => entry.id === id);
+  if (source) {
+    source.enabled = false;
+    source.lastError = null;
+  }
+  return emailAccounts.map((account) => ({ ...account }));
 };
 
 /** 预览模式下不造新消息，只推进来源的同步时间，用来核对按钮与提示。 */
@@ -974,6 +1104,10 @@ export const fixtures = {
   updateTask,
   setTaskStatus,
   inboxSources,
+  emailAccounts,
+  probeEmailAccount,
+  saveEmailAccount,
+  deleteEmailAccount,
   inboxCounts,
   inboxPage,
   markInboxRead,

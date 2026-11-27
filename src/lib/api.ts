@@ -257,6 +257,39 @@ export interface InboxSyncSummary {
   syncedAt: string;
 }
 
+/** 邮箱连接加密方式：`implicit` 是 993 直连 TLS，`starttls` 是 143 先明文再升级。 */
+export type EmailTls = "implicit" | "starttls";
+
+/** 设置页展示的邮箱账户：**不含授权码**，凭据只在 Windows 凭据管理器。 */
+export interface EmailAccountStatus {
+  id: string;
+  address: string;
+  host: string;
+  port: number;
+  tls: EmailTls;
+  mailbox: string;
+  enabled: boolean;
+  lastSyncedAt: string | null;
+  lastError: string | null;
+}
+
+export interface EmailAccountInput {
+  address: string;
+  /** 选填：编辑端口 / 加密方式时留空表示沿用已保存的授权码。 */
+  password?: string | null;
+  host: string;
+  /** 留空时后端按加密方式补 993 / 143。 */
+  port?: number | null;
+  tls?: EmailTls | null;
+  mailbox?: string | null;
+}
+
+/** 「测试连接」的结果：只回邮箱概况，不回任何凭据。 */
+export interface EmailAccountProbe {
+  mailboxTotal: number;
+  uidValidity: number;
+}
+
 /** 开发用入库入参：字段与后端 `IngestInboxMessageInput` 一致。 */
 export interface IngestInboxMessageInput {
   externalId: string;
@@ -663,6 +696,30 @@ export async function dismissInboxMessage(id: string): Promise<InboxMessage> {
 export async function convertInboxMessageToTask(id: string): Promise<Task> {
   const mocked = await preview((data) => data.convertInboxMessage(id));
   return mocked ?? call("convert_inbox_message_to_task", { input: { id } });
+}
+
+/** 设置页的邮箱账户列表；已删除的账户会从列表消失，但历史消息仍在收件箱。 */
+export async function listEmailAccounts(): Promise<EmailAccountStatus[]> {
+  const mocked = await preview((data) => data.emailAccounts);
+  return mocked ?? call("list_email_accounts");
+}
+
+/** 只连接验证，不落库；新增账户时授权码必填。 */
+export async function testEmailAccount(input: EmailAccountInput): Promise<EmailAccountProbe> {
+  const mocked = await preview((data) => data.probeEmailAccount(input));
+  return mocked ?? call("test_email_account", { input });
+}
+
+/** 保存会先试连再落库，成功后后台立即同步一次该账户。 */
+export async function saveEmailAccount(input: EmailAccountInput): Promise<EmailAccountStatus> {
+  const mocked = await preview((data) => data.saveEmailAccount(input));
+  return mocked ?? call("save_email_account", { input });
+}
+
+/** 删除账户只做软停用：凭据与配置清掉，历史邮件留在收件箱。 */
+export async function deleteEmailAccount(id: string): Promise<EmailAccountStatus[]> {
+  const mocked = await preview((data) => data.deleteEmailAccount(id));
+  return mocked ?? call("delete_email_account", { input: { id } });
 }
 
 /** 只用于开发窗口造消息；正式构建里后端会直接拒绝。 */
