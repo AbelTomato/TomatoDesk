@@ -34,6 +34,29 @@ pnpm tauri:dev
 
 工程进度和验证记录见 `docs/execution-plans/` 与 `docs/development-logs/`。
 
+## 历史链接回填脚本
+
+早期版本把整条 URL 当标题，列表里一批链接记录长得一样。`src-tauri/src/bin/backfill_capture_labels.rs` 用当前 `link_label` 规则重算缺失的标题与摘要，与应用内的即时保存、后台补全共用同一套命名。先退出 TomatoDesk，再按需运行：
+
+```bash
+# 预览：只打印将要发生的变化，不写库、不联网
+cargo run --manifest-path src-tauri/Cargo.toml --bin backfill_capture_labels
+
+# 开发版数据目录（com.tomatodesk.app.dev）
+cargo run --manifest-path src-tauri/Cargo.toml --bin backfill_capture_labels -- --dev
+
+# 确认后写库：先用 VACUUM INTO 备份到库文件旁的 backup/
+cargo run --manifest-path src-tauri/Cargo.toml --bin backfill_capture_labels -- --apply
+
+# 额外联网抓页面标题与描述，默认只按 URL 推导
+cargo run --manifest-path src-tauri/Cargo.toml --bin backfill_capture_labels -- --apply --fetch
+```
+
+- `--db <path>` 显式指定库文件；缺省按 `APPDATA` + identifier 找默认数据目录，路径不存在时直接报错，不会新建空库。
+- `--limit <n>` 限制本次扫描条数，便于先小批量试。
+- 只补空着的一侧：已有标题或摘要原样保留，只写 `title` / `summary`，不动 `note` / `body` / `archived_at` / `created_at` / `updated_at`，因此列表顺序不变；`captures_fts` 由 `AFTER UPDATE` 触发器自动同步。
+- 库文件被占用时最多等 5 秒（`Database` 的 `busy_timeout`），仍失败说明应用还在写，退出应用后重跑。
+
 ## 构建 Windows 安装包
 
 在 Windows PowerShell 中运行：
