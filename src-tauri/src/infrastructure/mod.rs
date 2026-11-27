@@ -5,5 +5,5 @@ pub mod email;
 pub mod github;
 pub mod link_label;
 pub mod secrets;
-/// 只有 `WebMetadata` 对外可见：`link_label` 的公开入参需要它，抓取函数仍留在 crate 内。
+/// `WebMetadata` 与抓取入口对回填脚本可见；正文回源仍留在 crate 内。
 pub mod web_metadata;

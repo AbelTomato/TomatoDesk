@@ -3,6 +3,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
+    time::Duration,
 };
 
 use rusqlite::{Connection, Transaction};
@@ -104,6 +105,9 @@ impl Database {
         }
 
         let connection = Connection::open(path)?;
+        // 同一份库可能被应用与离线脚本同时打开：默认立即返回 `database is locked`，
+        // 等一小会儿让持有写锁的一方先提交，比直接失败更符合预期。
+        connection.busy_timeout(Duration::from_secs(5))?;
         let database = Self {
             connection: Arc::new(Mutex::new(connection)),
             path: Some(path.to_path_buf()),
@@ -125,6 +129,24 @@ impl Database {
 
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
+    }
+
+    /// 把当前库完整复制到指定路径，供离线脚本写库前留一份可回滚的副本。
+    ///
+    /// 用 `VACUUM INTO` 而不是拷文件：产出的副本一致，也不会漏掉 `-wal` 里的内容。
+    pub fn snapshot_to(&self, target: impl AsRef<Path>) -> DbResult<()> {
+        let target = target.as_ref();
+        if let Some(parent) = target
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            fs::create_dir_all(parent)?;
+        }
+        let target_text = target.to_string_lossy().into_owned();
+        self.with_connection(|connection| {
+            connection.execute("VACUUM INTO ?1", [&target_text])?;
+            Ok(())
+        })
     }
 
     /// 本次启动因迁移产生的备份文件；没有执行迁移时为 `None`。

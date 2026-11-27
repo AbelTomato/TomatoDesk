@@ -27,7 +27,8 @@ pub struct WebMetadata {
     pub excerpt: Option<String>,
 }
 
-pub(crate) async fn fetch_web_metadata(url: &Url) -> Option<WebMetadata> {
+/// 抓取页面标题与描述；离线回填脚本的 `--fetch` 也复用这一个入口。
+pub async fn fetch_web_metadata(url: &Url) -> Option<WebMetadata> {
     let (html, final_url) = fetch_html(url).await?;
     let mut metadata = extract_metadata(&html, &final_url);
     metadata.excerpt = extract_text(&html).as_deref().and_then(text_excerpt);

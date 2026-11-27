@@ -248,6 +248,88 @@ fn conditional_link_metadata_update_accepts_empty_labels() {
 }
 
 #[test]
+fn backfill_scan_finds_links_with_missing_labels_only() {
+    let db = Database::in_memory().unwrap();
+    let captures = db.captures();
+    let blank = captures
+        .create(NewCapture {
+            kind: CaptureKind::Link,
+            source: "quick_capture".into(),
+            url: Some("https://example.com/a".into()),
+            title: None,
+            summary: Some("   ".into()),
+            note: None,
+            body: None,
+            repo_id: None,
+        })
+        .unwrap();
+    captures
+        .create(NewCapture {
+            kind: CaptureKind::Link,
+            source: "quick_capture".into(),
+            url: Some("https://example.com/b".into()),
+            title: Some("已有标题".into()),
+            summary: Some("已有摘要".into()),
+            note: None,
+            body: None,
+            repo_id: None,
+        })
+        .unwrap();
+    // 普通笔记没有 URL，标题为空也不在回填范围内。
+    captures.create(capture("", "笔记正文")).unwrap();
+
+    let rows = captures.list_incomplete_links(None).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, blank.id);
+    // 纯空白摘要也算缺失；limit 只影响本次扫描量。
+    assert_eq!(captures.list_incomplete_links(Some(1)).unwrap().len(), 1);
+}
+
+#[test]
+fn backfill_fills_only_missing_sides_and_keeps_order() {
+    let db = Database::in_memory().unwrap();
+    let captures = db.captures();
+    let created = captures
+        .create(NewCapture {
+            kind: CaptureKind::Link,
+            source: "quick_capture".into(),
+            url: Some("https://example.com/posts/hello".into()),
+            // 用户已经改过标题，回填只能补空着的摘要。
+            title: Some("我自己改的标题".into()),
+            summary: None,
+            note: Some("备注不动".into()),
+            body: None,
+            repo_id: None,
+        })
+        .unwrap();
+    let labels = LinkLabels {
+        title: "hello world · example.com".into(),
+        summary: "example.com · posts / hello".into(),
+    };
+
+    assert!(
+        captures
+            .fill_missing_link_labels(&created.id, &labels)
+            .unwrap()
+    );
+    let filled = captures.get(&created.id).unwrap().unwrap();
+    assert_eq!(filled.title.as_deref(), Some("我自己改的标题"));
+    assert_eq!(filled.summary.as_deref(), Some(labels.summary.as_str()));
+    assert_eq!(filled.note.as_deref(), Some("备注不动"));
+    // 回填不写 updated_at，旧记录不会被顶到列表顶部。
+    assert_eq!(filled.updated_at, created.updated_at);
+    // 两侧都齐了以后不再命中扫描，也不会再写一次。
+    assert!(captures.list_incomplete_links(None).unwrap().is_empty());
+    assert!(
+        !captures
+            .fill_missing_link_labels(&created.id, &labels)
+            .unwrap()
+    );
+    // 搜索索引由 AFTER UPDATE 触发器同步，不需要手动 rebuild。
+    assert_eq!(captures.search("example").unwrap().len(), 1);
+}
+
+#[test]
 fn tags_and_capture_tag_links_obey_foreign_keys() {
     let db = Database::in_memory().unwrap();
     let captures = db.captures();

@@ -251,6 +251,43 @@ impl CaptureRepository {
         })
     }
 
+    /// 历史回填用：标题或摘要缺失的链接记录，按创建时间从旧到新。
+    ///
+    /// 空字符串与纯空白都算缺失；空标题、空摘要分开判断，只补缺的那一侧。
+    /// `limit` 为空表示不限量，调用方是离线脚本，不会同时有别的大量写入。
+    pub fn list_incomplete_links(&self, limit: Option<usize>) -> DbResult<Vec<Capture>> {
+        let limit = limit.map_or(-1, |limit| i64::try_from(limit).unwrap_or(i64::MAX));
+        self.database.with_connection(|connection| {
+            let mut statement = connection.prepare(&format!(
+                "SELECT {CAPTURE_FIELDS} FROM captures
+                 WHERE kind = 'link' AND url IS NOT NULL
+                   AND (title IS NULL OR trim(title) = '' OR summary IS NULL OR trim(summary) = '')
+                 ORDER BY created_at ASC, id ASC
+                 LIMIT ?1"
+            ))?;
+            let rows = statement.query_map([limit], raw_capture)?;
+            rows.map(|row| decode_capture(row?)).collect()
+        })
+    }
+
+    /// 回填历史链接：只写空的那一侧，已有内容与 `updated_at` 都不动。
+    ///
+    /// 判断写在 `WHERE` 里而不是先读后写：读到写之间即使被应用补全或用户编辑，
+    /// 这一条也不会被覆盖，`updated_at` 不变也就不会把旧记录顶到列表顶部。
+    pub fn fill_missing_link_labels(&self, id: &str, labels: &LinkLabels) -> DbResult<bool> {
+        self.database.with_connection(|connection| {
+            let changed = connection.execute(
+                "UPDATE captures
+                 SET title = CASE WHEN title IS NULL OR trim(title) = '' THEN ?2 ELSE title END,
+                     summary = CASE WHEN summary IS NULL OR trim(summary) = '' THEN ?3 ELSE summary END
+                 WHERE id = ?1 AND kind = 'link' AND url IS NOT NULL
+                   AND (title IS NULL OR trim(title) = '' OR summary IS NULL OR trim(summary) = '')",
+                params![id, labels.title, labels.summary],
+            )?;
+            Ok(changed > 0)
+        })
+    }
+
     /// 归档 / 取消归档。重复归档保留第一次的归档时间。
     pub fn set_archived(&self, id: &str, archived: bool) -> DbResult<bool> {
         self.database.with_connection(|connection| {
