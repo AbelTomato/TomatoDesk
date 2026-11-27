@@ -1,6 +1,6 @@
 # 收件箱邮件连接器（阶段五）接入方案
 
-- 状态：S0 完成（163 真实账号已跑通登录 + `ID` + `EXAMINE` + 取信），S1 完成（契约与存储层），S2 完成（解析层与 fixtures），S3 完成（IMAP 取信与多账户轮询），S4 完成（命令层与 DTO 校验），S5 完成（前端账户管理与邮件详情），S6 待办（门禁与文档收尾）
+- 状态：已实施。S0 完成（163 真实账号已跑通登录 + `ID` + `EXAMINE` + 取信），S1 完成（契约与存储层），S2 完成（解析层与 fixtures），S3 完成（IMAP 取信与多账户轮询），S4 完成（命令层与 DTO 校验），S5 完成（前端账户管理与邮件详情），S6 完成（门禁与文档收尾）。真实账号下的端到端同步与「已读不回写服务器」仍待按 9.2 手工验证
 - 创建日期：2026-11-26
 - 最后更新：2026-11-27
 - 涉及模块：`inbox` / `inbox_sources` / `inbox_messages` / `secrets` / `settings` / `inbox-ui`
@@ -613,6 +613,18 @@ TcpStream::connect_timeout(8s)
 2. 更新本计划的状态与落地记录、当天的开发日志；发布说明标注「多账户上限 5、仅支持授权码、不支持 Outlook/M365、已读不回写服务器、不下载附件」。
 3. 计划文档 8 的阶段五条目改为「已实施」，并链到本文件。
 
+**已落地（2026-11-27）**
+
+- 完整门禁按 9.4 跑了一遍，全部通过：
+  - `scripts/windows-cargo.ps1 fmt --check`、`-Command clippy -CargoArgs "--all-targets","--","-D","warnings"` 无输出。
+  - `scripts/windows-cargo.ps1 test --locked`：105 个单元测试通过，探针 `probe_imap` 1 个 ignored，编码用例 1 个通过，全程不触网。
+  - `pnpm exec tsc --noEmit`、`pnpm lint`、`pnpm test`（3 个文件 18 个用例）、`pnpm build`、`pnpm check:design`、`pnpm format:check` 全部通过。
+- 两条不影响结论的构建提示，记录备查：`imap-proto 0.10.2` 命中 Rust 的 future-incompat 报告（第三方依赖，当前仍可编译）；前端主 chunk 707 KB 触发 Vite 的 500 KB 体积提示（既有问题，本阶段只增加少量代码）。
+- 发布说明：新增 `docs/releases/v0.5.0.md`，明确标注「最多 5 个账户、仅授权码 / 应用专用密码、不支持 Outlook / M365、已读不回写服务器、不下载附件」。
+- 计划联动：`2026-11-26-capture-inbox-split.md` 的状态行与第 8 节阶段五改为「已实施」并回链本文件。
+- 版本号仍是 `0.4.0`：按 `docs/git-conventions.md`，版本号与 `v0.5.0` 标签由发布步骤一起改，本次只备好发布说明，不打标签。
+- 9.2 的十条手工项里，能被自动化替代的只有两条：第 10 条（改端口复用同一账户，`saving_the_same_account_twice_reuses_one_row`）与第 8 条的一半（删除后消息保留、第 6 个账户被拒，见 `commands/email.rs` 用例）。其余仍需真实邮箱：第 1、2、4、5、6 条是端到端同步、多账户隔离与新邮件到达，第 3 条缺 Gmail 账号，第 7 条要到网页邮箱核对未读状态，第 9 条建议真机走一遍「来自邮件」回跳。
+
 ## 8. 涉及文件与模块
 
 | 文件                                                           | 变化                                                                                  |
@@ -737,15 +749,15 @@ pnpm lint && pnpm test && pnpm build && pnpm check:design && pnpm format:check
 
 ## 11. 完成标准
 
-- [ ] 设置页可以添加、编辑、删除最多 5 个邮箱账户，测试连接给出明确成功/失败结果。
-- [ ] 保存后无需手动触发，该账户首轮同步自动完成，收件箱出现邮件消息且分类为「邮件」。
-- [ ] 多个账户在来源栏可分别筛选；一个账户失败不影响其他账户。
-- [ ] 重复同步、应用重启、UIDVALIDITY 变化都不产生重复消息。
-- [ ] 邮件详情的动作集合与 GitHub 通知一致（已读 / 忽略 / 转待办），没有 GitHub 死链。
-- [ ] 转待办后显示「来自邮件」并可回跳原消息。
-- [ ] 收件箱已读不改变邮箱服务器状态（手工验证）。
-- [ ] 密码不出现在任何 IPC 返回值、日志或 `payload_json` 中。
-- [ ] 全部自动化门禁通过，计划与开发日志补齐。
+- [x] 设置页可以添加、编辑、删除最多 5 个邮箱账户，测试连接给出明确成功/失败结果（命令层用例 + `?preview` 走查；真实账号试连见 9.2）。
+- [ ] 保存后无需手动触发，该账户首轮同步自动完成，收件箱出现邮件消息且分类为「邮件」——`sync_account_soon` 已实现，端到端待真实账号验证。
+- [x] 多个账户在来源栏可分别筛选（`?preview` 走查）；一个账户失败不影响其他账户（`a_failing_account_does_not_disturb_another`）。
+- [x] 重复同步与 `UIDVALIDITY` 变化不产生重复消息（`a_second_round_does_not_duplicate_messages`、`a_changed_uid_validity_rescans_without_duplicates`）；应用重启依赖游标落库，未单独测。
+- [x] 邮件详情的动作集合与 GitHub 通知一致（已读 / 忽略 / 转待办），没有 GitHub 死链（`?preview` 走查）。
+- [x] 转待办后显示「来自邮件」并可回跳原消息（复用阶段四的 `origin_source_kind` 子查询与回跳，`task_projection_resolves_the_inbox_source_kind_without_a_second_query`）。
+- [ ] 收件箱已读不改变邮箱服务器状态（只能手工验证，见 9.2 第 7 条）。
+- [x] 密码不出现在任何 IPC 返回值、日志或 `payload_json` 中（`account_status_never_carries_the_password`、`payload_stays_small_and_carries_no_credentials`）。
+- [x] 全部自动化门禁通过，计划与开发日志补齐。
 
 ## 12. 评审记录与后续待定
 
@@ -778,3 +790,4 @@ pnpm lint && pnpm test && pnpm build && pnpm check:design && pnpm format:check
 - 2026-11-27 09:42：S3 完成。新增 `infrastructure/email/client.rs`（建连 / STARTTLS / `ID` / `LOGIN`+PLAIN 回退 / `EXAMINE` / UID 增量取信 / 游标 / 错误分类），`application/inbox/email.rs` 补齐 `MailFetcher`、`sync_account`、`sync_all`、`Backoff`、`start_poller`，`lib.rs` 注册轮询。实测确认 `BODY.PEEK[]<0.262144>` 无法被 `imap-proto 0.10.2` 解析，改成分批整封取。96 个测试通过（新增 19 个），探针 1 ignored；`fmt --check`、`clippy -D warnings` 通过。
 - 2026-11-27 10:05：S4 完成（`c6e1931`）。新增 `commands/email.rs`（四个命令 + `MailProber` / `EmailCredentials` 两个替换点）、`EmailAccountInput` 校验、`EmailError -> CommandError` 映射、`lib.rs` 注册；`sync_all` 抽出 `sync_selected(only)` 并新增 `sync_account_soon`，保存后立即同步该账户。删除账户改用 `config_json = '{}'`（列上有 `json_valid` CHECK，空串会撞约束；`NULL` 会让 `String` 读取失败），仓储新增 `clear_config`；`password` 改选填以支持「只改端口」。105 个测试通过（新增 9 个），探针 1 ignored，`fmt` / `clippy -D warnings` 通过，全部不触网。
 - 2026-11-27 10:26：S5 完成。`api.ts` 补四个调用与 preview 桩；`SettingsPage` 新增邮箱账户区块（列表 / 新增 / 编辑 / 删除 / 测试连接 / 域名预填 / 上限 5）；`InboxPage` 同步时间改取启用来源最新值、补邮箱说明与逐来源失败提示；`InboxMessageDetail` 邮件分支去掉 GitHub 动作；`fixtures` 补两个邮箱来源与两封邮件。新增 12 个前端用例（`pnpm test` 18 通过），`tsc --noEmit`、`lint`、`build`、`check:design`、`fmt --check`、`clippy --all-targets -D warnings`、`cargo test --locked`（105 通过，探针 1 ignored）全部通过；`format:check` 原先把本文件的表格对齐判为未格式化，本次一并格式化。真实账号的「保存 → 首轮同步」与「已读不回写服务器」仍需按 9.2 手工验证。
+- 2026-11-27 10:55：S6 完成，计划收尾为「已实施」。完整门禁通过：`fmt --check`、`clippy --all-targets -D warnings`、`cargo test --locked`（105 通过 + 探针 1 ignored + 编码用例 1）、`tsc --noEmit`、`lint`、`test`（18）、`build`、`check:design`、`format:check`。新增 `docs/releases/v0.5.0.md`（标注多账户上限 5、仅授权码、不支持 Outlook/M365、已读不回写、不下载附件）；`capture-inbox-split.md` 的阶段五改为已实施并回链。版本号仍为 0.4.0，标签与版本号留给发布步骤。完成标准中「首轮同步端到端」与「已读不回写服务器」仍为未勾选项，待真实账号手工验证。

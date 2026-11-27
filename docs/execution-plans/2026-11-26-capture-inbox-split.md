@@ -1,6 +1,6 @@
 # 随手记、待办与收件箱的模块拆分方案
 
-- 状态：已确认，阶段一、阶段二、阶段三、阶段四已实施
+- 状态：已确认，阶段一、阶段二、阶段三、阶段四、阶段五已实施
 - 日期：2026-11-26
 - 涉及模块：`items` / `inbox` / `capture` / `task` / `repos` / `search` / `export`
 - 目标版本：MVP 为 v0.5.0（阶段一至三），连接器与增强项后续版本推进
@@ -727,13 +727,15 @@ pub struct MigrationNotice {
 - 门禁：`cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test --locked`（49/49）；`pnpm exec tsc --noEmit`、`pnpm lint`、`pnpm test`（6/6）、`pnpm build`、`pnpm check:design`、`pnpm format:check` 全部通过。
 - 待人工复核：真实 Token（含 / 不含 `notifications` 权限）各同步一次、等一轮后台轮询确认新通知自动出现、新通知与「有新进展」两条路径、已读回写后 GitHub 侧状态、断网时标已读后队列按退避重试、待办回跳原消息；本轮无头 Edge 未能产出截图，未做逐页视觉走查。
 
-### 阶段五：邮件连接器（可延后）
+### 阶段五：邮件连接器（已实施）
 
 范围：IMAP 增量拉取、Message-ID 去重、纯文本优先、HTML 清洗、发件人展示。
 
 邮件涉及授权码存储、HTML 安全、编码与附件，建议单独排期，不与阶段四合并。
 
 接入方案已单独成文：`docs/execution-plans/2026-11-26-inbox-email-connector.md`（接入位置、数据流、IPC 与事件契约、异常边界、分步实施与验证要点）。核心结论是不需要新迁移，邮件作为 `inbox` 的第二个 provider 接入，支持多账户（上限 5）、授权码登录、已读不回写服务器、不下载附件。
+
+2026-11-27 已完成（S0-S6）：IMAP 客户端（implicit TLS / STARTTLS、登录前 `ID`、`LOGIN` + `AUTHENTICATE PLAIN` 回退、`EXAMINE` + `BODY.PEEK[]` 增量取信）、解析层（RFC 2047、GBK/GB18030、HTML→纯文本）、多账户串行轮询（10 分钟一轮、单账户 100 封、整轮 5 分钟预算、认证失败退避 60 分钟）、四个账户管理命令、设置页「邮箱账户」区块与收件箱/详情的邮件分支。发布说明见 `docs/releases/v0.5.0.md`；真实账号的端到端同步仍待按接入方案 9.2 手工验证。
 
 ## 9. 验证方式
 
