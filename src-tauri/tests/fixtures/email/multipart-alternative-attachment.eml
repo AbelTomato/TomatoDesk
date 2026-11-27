@@ -1,0 +1,29 @@
+From: Reports <reports@example.com>
+To: me@tomatodesk.test
+Subject: Monthly report
+Date: Mon, 23 Nov 2026 07:15:00 +0800
+Message-ID: <report-1@example.com>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="outer"
+
+--outer
+Content-Type: multipart/alternative; boundary="inner"
+
+--inner
+Content-Type: text/plain; charset="utf-8"
+
+纯文本正文：本月报表见附件。
+
+--inner
+Content-Type: text/html; charset="utf-8"
+
+<p>HTML 正文：本月报表见附件。</p>
+
+--inner--
+--outer
+Content-Type: application/pdf; name="report.pdf"
+Content-Disposition: attachment; filename="report.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQK
+--outer--

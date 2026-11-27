@@ -1,0 +1,9 @@
+From: Broken Clock <broken@example.com>
+To: me@tomatodesk.test
+Subject: Broken date
+Date: 32 Nov 2026 99:99:99 +0800
+Message-ID: <bad-date-1@example.com>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+
+发件人的时钟是错的，Date 无法解析，入库时按收到时间处理。

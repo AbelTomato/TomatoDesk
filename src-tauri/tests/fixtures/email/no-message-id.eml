@@ -1,0 +1,8 @@
+From: Alerts <alerts@example.com>
+To: me@tomatodesk.test
+Subject: Notice without Message-ID
+Date: Tue, 24 Nov 2026 12:00:00 +0800
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+
+这条通知故意不带 Message-ID，入库时用 uid 兜底生成 external_id。

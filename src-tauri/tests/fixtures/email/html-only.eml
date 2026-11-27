@@ -1,0 +1,20 @@
+From: notices@example.com
+To: me@tomatodesk.test
+Subject: HTML only notice
+Date: Sun, 22 Nov 2026 08:00:00 +0800
+Message-ID: <html-1@example.com>
+MIME-Version: 1.0
+Content-Type: text/html; charset="utf-8"
+
+<html>
+<head>
+<style>.hidden { display:none }</style>
+<title>通知</title>
+</head>
+<body>
+<p>请在浏览器中打开查看。</p>
+<a href="https://example.com/notice">公告链接</a>
+<img src="https://tracker.example.com/open.gif?u=abc" width="1" height="1" alt="tracking" />
+<script>alert("x")</script>
+</body>
+</html>
