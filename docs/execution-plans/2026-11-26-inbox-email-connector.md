@@ -1,6 +1,6 @@
 # 收件箱邮件连接器（阶段五）接入方案
 
-- 状态：S0 完成（163 真实账号已跑通登录 + `ID` + `EXAMINE` + 取信），S1 完成（契约与存储层），S2 完成（解析层与 fixtures），S3 完成（IMAP 取信与多账户轮询），S4 待开始
+- 状态：S0 完成（163 真实账号已跑通登录 + `ID` + `EXAMINE` + 取信），S1 完成（契约与存储层），S2 完成（解析层与 fixtures），S3 完成（IMAP 取信与多账户轮询），S4 完成（命令层与 DTO 校验），S5 待开始
 - 创建日期：2026-11-26
 - 最后更新：2026-11-27
 - 涉及模块：`inbox` / `inbox_sources` / `inbox_messages` / `secrets` / `settings` / `inbox-ui`
@@ -264,7 +264,8 @@ export interface EmailAccountStatus {
 
 export interface EmailAccountInput {
   address: string;
-  password: string;
+  /** 选填：编辑端口 / 加密方式时留空表示沿用已保存的授权码。 */
+  password?: string;
   host: string;
   port: number;
   tls: EmailTls;
@@ -277,7 +278,7 @@ export interface EmailAccountInput {
 | 字段 | 规则 |
 | --- | --- |
 | `address` | 必填，≤320，必须含 `@`，不含空白与换行 |
-| `password` | 必填，≤512，只去首尾空白（授权码内部可能有空格） |
+| `password` | 选填；新增账户、换授权码或首次测试连接时必填，≤512，只去首尾空白（授权码内部可能有空格）；留空则读该账户已保存的凭据 |
 | `host` | 必填，≤253，只允许主机名，不接受 `imap://`、`host:port` |
 | `port` | 1..=65535，默认 993 / 143 |
 | `tls` | 枚举，默认 `implicit` |
@@ -558,6 +559,23 @@ TcpStream::connect_timeout(8s)
 
 验收：空地址、无 `@`、端口越界、`host` 带协议前缀都返回 `validation`；第 6 个账户返回 `validation`；`list_email_accounts` 在任何情况下都不含密码字段。
 
+**已落地（2026-11-27）**
+
+- `commands/email.rs`（新增）：`list_email_accounts_in` / `test_email_account_in` / `save_email_account_in` / `delete_email_account_in` + 四个 `#[tauri::command]` 包装。保存顺序是「校验 → 派生 id → 上限检查 → 试连 → 写凭据 → upsert 来源」，试连失败不落库、不覆盖旧凭据。
+- 两个可替换接口，避免命令层测试触网或写入真实凭据库：`MailProber`（生产 `ImapProber`，放在 `application::inbox::email`，与 `MailFetcher` 同层）和 `EmailCredentials`（生产 `KeyringCredentials`，命令层私有）。
+- 阻塞操作统一走 `run_blocking`（`tokio::task::spawn_blocking`），异步命令不占住运行时。
+- 保存成功后调用 `application::inbox::email::sync_account_soon` 立即同步该账户：`sync_all` 抽出 `sync_selected(only)` 复用同一套预算与事件逻辑，单账户同步用独立退避表，用户刚改完配置不应被上一次失败拦住。
+- `commands/dto.rs`：新增 `EmailAccountInput` → `EmailAccountForm`。地址 ≤320 且必须含 `@`、不含空白；主机 ≤253 且拒绝 `://`、`:`、`/`；端口缺省按加密方式补 993/143、`0` 拒绝；`mailbox` ≤128 且拒绝控制字符；`password` ≤512 只去首尾空白。
+- `commands/error.rs`：`From<EmailError>` → `Unreachable` / `Auth` / `Mailbox` 归 `validation`，`Protocol` 归 `internal`，文案直接用 `EmailError` 的中文说明。
+- 三处实现决策（与原稿的差异，已同步到 5.2）：
+  1. **`password` 改选填**：新增账户或换授权码时必须填，编辑端口 / 加密方式时留空即沿用已保存凭据——否则设置页每次改端口都要用户重新找授权码。
+  2. **删除账户把 `config_json` 写成 `{}`**：列上是 `NOT NULL DEFAULT '{}' CHECK (json_valid(config_json))`，空串会触发 `SQLITE_CONSTRAINT`（映射成 `conflict`），`NULL` 又会让按 `String` 取列的 `list_email` 报 `InvalidColumnType`。空对象两处都满足，`EmailConfig::parse` 判为未配置，账户从列表消失但来源行与消息保留。仓储新增 `clear_config`，注释写明原因。
+  3. **上限判断只拦「新增」**：同一账户重复保存（`enabled = 1` 且 id 相同）不占新名额，改端口不会因为满 5 个而失败。
+- 测试：`commands/email.rs` 内联 9 个用例——入参校验矩阵、端口默认值、重复保存复用一行、第 6 个账户被拒且删除后可再加、删除后消息保留且账户隐藏、序列化结果不含 `password`、无凭据时不发请求、认证失败映射为 `validation` 且不落库、非邮箱 id 返回 `not_found`。
+- 验证：`cargo test --locked` 105 通过（新增 9 个），探针 1 ignored；`fmt --check`、`clippy --all-targets -D warnings` 通过，全部不触网。
+- 门禁口径修正：`scripts/windows-cargo.ps1` 的 `-Command` 补了 `fmt`（原来只允许 check/build/clippy/test，`fmt --check` 会被参数校验直接拒绝）；clippy 带 `-- -D warnings` 时 PowerShell 会把 `--` 后的内容绑错，实际用 `-Command clippy -CargoArgs "--all-targets","--","-D","warnings"`。
+- 未闭环：真实账号下的保存 → 首轮同步仍待 S5 界面接好后手工验证；`sync_account_soon` 只能通过真实 `AppHandle` 触发，自动化只覆盖到 `sync_account` 与命令层假实现。
+
 ### S5 前端
 
 1. `src/lib/api.ts`：四个调用 + 类型 + preview 桩（`fixtures` 里维护一份可变账户列表）。
@@ -588,10 +606,10 @@ TcpStream::connect_timeout(8s)
 | `src-tauri/src/infrastructure/email/parse.rs` | 新增：MIME 解析、编码、HTML→纯文本 |
 | `src-tauri/src/infrastructure/mod.rs` | 导出 `email` |
 | `src-tauri/src/infrastructure/secrets/mod.rs` | 抽出 `entry(user)`，加邮箱凭据三函数 |
-| `src-tauri/src/application/inbox/email.rs` | 新增：多账户同步、映射、轮询、退避、游标 |
+| `src-tauri/src/application/inbox/email.rs` | 新增：测试连接替换点 `MailProber`、多账户同步、映射、轮询、退避、游标、单账户立即同步 |
 | `src-tauri/src/application/inbox/mod.rs` | 声明 `email` |
 | `src-tauri/src/domain/inbox.rs` | 新增 `EmailTls` / `EmailAccountStatus` / `EmailAccountProbe` |
-| `src-tauri/src/infrastructure/db/repositories/inbox_source.rs` | 加 `upsert_email`、`list_email`、配置读写、启停、清游标、计数 |
+| `src-tauri/src/infrastructure/db/repositories/inbox_source.rs` | 加 `upsert_email`、`list_email`、配置读写、清配置、启停、清游标、计数 |
 | `src-tauri/src/commands/email.rs` | 新增四个命令 |
 | `src-tauri/src/commands/dto.rs` | `EmailAccountInput` 与校验 |
 | `src-tauri/src/commands/mod.rs` | 导出 `email` |
@@ -665,11 +683,13 @@ TcpStream::connect_timeout(8s)
 
 ```bash
 scripts/windows-cargo.ps1 fmt --check
-scripts/windows-cargo.ps1 clippy --all-targets -- -D warnings
+scripts/windows-cargo.ps1 -Command clippy -CargoArgs "--all-targets","--","-D","warnings"
 scripts/windows-cargo.ps1 test --locked
 pnpm exec tsc --noEmit
 pnpm lint && pnpm test && pnpm build && pnpm check:design && pnpm format:check
 ```
+
+注意：`clippy ... -- -D warnings` 直接写成位置参数时，PowerShell 会把 `--` 之后的内容绑错，必须用上面 `-CargoArgs` 的写法；`fmt` 已在包装脚本的 `ValidateSet` 里。
 
 ## 10. 风险与回滚
 
@@ -736,3 +756,4 @@ pnpm lint && pnpm test && pnpm build && pnpm check:design && pnpm format:check
 - 2026-11-26 22:45：S1 完成。凭据键名改为按来源 id 派生，`inbox_sources` 增加邮箱账户的 upsert / 列表 / 配置读写 / 软停用 / 清游标 / 计数，`domain` 与 `infrastructure::email` 补齐账户契约与错误分类；58 个测试通过，探针 1 ignored。
 - 2026-11-26 23:42：S2 完成。`parse_message` 纯函数 + 7 个 `.eml` fixtures + `to_new_message` 映射；fixtures 覆盖 GBK、只有 HTML（含追踪像素）、HTML+附件、缺 `Message-ID`、非法 `Date`、`multipart/signed`；77 个测试通过（新增 19 个），探针 1 ignored。
 - 2026-11-27 09:42：S3 完成。新增 `infrastructure/email/client.rs`（建连 / STARTTLS / `ID` / `LOGIN`+PLAIN 回退 / `EXAMINE` / UID 增量取信 / 游标 / 错误分类），`application/inbox/email.rs` 补齐 `MailFetcher`、`sync_account`、`sync_all`、`Backoff`、`start_poller`，`lib.rs` 注册轮询。实测确认 `BODY.PEEK[]<0.262144>` 无法被 `imap-proto 0.10.2` 解析，改成分批整封取。96 个测试通过（新增 19 个），探针 1 ignored；`fmt --check`、`clippy -D warnings` 通过。
+- 2026-11-27 10:05：S4 完成（`c6e1931`）。新增 `commands/email.rs`（四个命令 + `MailProber` / `EmailCredentials` 两个替换点）、`EmailAccountInput` 校验、`EmailError -> CommandError` 映射、`lib.rs` 注册；`sync_all` 抽出 `sync_selected(only)` 并新增 `sync_account_soon`，保存后立即同步该账户。删除账户改用 `config_json = '{}'`（列上有 `json_valid` CHECK，空串会撞约束；`NULL` 会让 `String` 读取失败），仓储新增 `clear_config`；`password` 改选填以支持「只改端口」。105 个测试通过（新增 9 个），探针 1 ignored，`fmt` / `clippy -D warnings` 通过，全部不触网。
