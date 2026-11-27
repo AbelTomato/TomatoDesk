@@ -85,6 +85,7 @@ pub fn run() {
             app.manage(database.clone());
             application::github::start_scheduler(database.clone(), app.handle().clone());
             application::inbox::github::start_poller(database.clone(), app.handle().clone());
+            application::inbox::email::start_poller(database.clone(), app.handle().clone());
             application::inbox::github::start_read_back_worker(database, app.handle().clone());
             platform::setup(app)
         })
