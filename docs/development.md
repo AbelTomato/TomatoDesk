@@ -18,8 +18,10 @@ pnpm lint
 pnpm test
 pnpm check:design
 pnpm tauri dev
+pnpm tauri:dev
 ```
 
+- `pnpm tauri:dev` 是常规开发入口：在 `tauri dev` 基础上叠加 `src-tauri/tauri.dev.conf.json`（`productName` / `identifier` 换成开发专用），因此本机可以同时运行已安装的生产版与开发版。直接 `pnpm tauri dev` 会退回共享数据目录、共享热键，只适合临时调试。
 - `pnpm check:design`：扫描 `src/`，检查旧色板 token、硬编码白色文字、彩色填充底，以及 `backdrop-blur` 是否只出现在浮层组件。规范见 `docs/design/design-language.md`。
 - `pnpm test`：运行 Vitest 单测，目前覆盖 Markdown 链接 / 图片的协议白名单（`src/components/markdown/markdownUrl.test.ts`）。
 - 开发模式下可用 URL 参数单独预览界面，不需要启动 Tauri 窗口：
@@ -59,7 +61,23 @@ Release workflow 会再次运行检查，验证标签与应用版本一致，在
 
 ## 自动更新与签名
 
-客户端启动后延迟 8 秒从 GitHub Release 检查更新，也可通过托盘菜单「检查更新」手动触发。发现新版本后由用户确认下载，下载完成后再由用户确认重启；安装程序以 NSIS `passive` 模式运行，结束后自动重新启动应用。
+应用按后台常驻进程定位：启动 60 秒后检查一次更新，此后每 4 小时检查一次，节奏由 Rust 侧（`src-tauri/src/application/updater.rs`）发出 `update-check-due` 事件驱动，不依赖 WebView 定时器，主窗口隐藏时也会照常触发。发现新版本后：主窗口可见时显示右下角非阻塞卡片，隐藏时改发 Windows 系统通知，同时留一个右下角小胶囊；同一版本只提醒一次。下载与重启安装仍由用户确认，安装程序以 NSIS `passive` 模式运行，结束后自动重新启动应用。托盘菜单「检查更新」始终可用，是通知失败时的兜底。
+
+开发构建不注册 updater 插件，前端也不发起任何检查（手动点击会提示「开发构建不检查更新」），避免开发版把自己当成已发布版本覆盖生产安装。
+
+### 开发 / 生产共存
+
+生产版与本机的开发版可以同时运行，五个维度各自隔离：
+
+| 维度                  | 生产                   | 开发（`pnpm tauri:dev`）     |
+| --------------------- | ---------------------- | ---------------------------- |
+| identifier / 数据目录 | `com.tomatodesk.app`   | `com.tomatodesk.app.dev`     |
+| 产品名                | `TomatoDesk`           | `TomatoDesk Dev`             |
+| 随手记热键            | `Ctrl + Shift + Space` | `Ctrl + Alt + Shift + Space` |
+| 凭据服务名            | `TomatoDesk`           | `TomatoDesk Dev`             |
+| 检查更新              | 每 4 小时              | 不检查                       |
+
+全局快捷键属于操作系统级命名空间，不随 identifier 隔离，必须单独区分；注册失败也只记一条警告，应用照常启动（托盘与界面仍可用），不会因为热键被别的软件占用而退出。
 
 ### 更新源
 
