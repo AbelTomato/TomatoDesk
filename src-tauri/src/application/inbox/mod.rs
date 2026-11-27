@@ -3,6 +3,7 @@
 //! 判断动作全部是人工触发，收件箱不会自动流入待办或随手记。
 //! 连接器只负责入库，不碰判断结果。
 
+pub(crate) mod email;
 pub(crate) mod github;
 
 use crate::{
