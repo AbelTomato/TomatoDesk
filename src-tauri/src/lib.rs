@@ -36,6 +36,7 @@ pub fn run() {
             commands::restore_capture,
             commands::search_captures,
             commands::capture_from_clipboard,
+            commands::finish_capture,
             commands::open_capture,
             commands::dismiss_capture,
             commands::list_tags,

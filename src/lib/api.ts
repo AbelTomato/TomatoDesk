@@ -644,6 +644,11 @@ export function dismissCapture(): Promise<void> {
   return call<void>("dismiss_capture");
 }
 
+/** 保存成功后收起随手记窗口，并通知主窗口刷新列表与角标。 */
+export function finishCapture(): Promise<void> {
+  return call<void>("finish_capture");
+}
+
 export function openCapture(): Promise<void> {
   return call<void>("open_capture");
 }

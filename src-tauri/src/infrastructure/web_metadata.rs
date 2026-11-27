@@ -15,17 +15,23 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_RESPONSE_BYTES: usize = 512 * 1024;
 /// 回源正文的字符上限，避免把整页导航也塞进详情面板。
 const MAX_BODY_CHARS: usize = 20_000;
+/// 链接摘要的兜底正文长度：只留一段，用于描述缺失时补全随手记摘要。
+const MAX_EXCERPT_CHARS: usize = 200;
 
 #[derive(Debug, Default)]
-pub(crate) struct WebMetadata {
+pub struct WebMetadata {
     pub title: Option<String>,
     pub description: Option<String>,
     pub canonical_url: Option<String>,
+    /// 页面正文的首段纯文本；描述缺失时用它补摘要。
+    pub excerpt: Option<String>,
 }
 
 pub(crate) async fn fetch_web_metadata(url: &Url) -> Option<WebMetadata> {
     let (html, final_url) = fetch_html(url).await?;
-    Some(extract_metadata(&html, &final_url))
+    let mut metadata = extract_metadata(&html, &final_url);
+    metadata.excerpt = extract_text(&html).as_deref().and_then(text_excerpt);
+    Some(metadata)
 }
 
 /// 详情按需加载用的正文回源：只取纯文本，不渲染 HTML。
@@ -127,6 +133,22 @@ fn extract_text(html: &str) -> Option<String> {
     Some(text.chars().take(MAX_BODY_CHARS).collect())
 }
 
+/// 摘要只取正文开头一段，折叠空白后截断。
+fn text_excerpt(text: &str) -> Option<String> {
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return None;
+    }
+    let mut excerpt = collapsed
+        .chars()
+        .take(MAX_EXCERPT_CHARS)
+        .collect::<String>();
+    if collapsed.chars().count() > MAX_EXCERPT_CHARS {
+        excerpt.push('…');
+    }
+    Some(excerpt)
+}
+
 fn extract_metadata(html: &str, base_url: &Url) -> WebMetadata {
     let Ok(meta_selector) = Selector::parse("meta") else {
         return WebMetadata::default();
@@ -186,6 +208,8 @@ fn extract_metadata(html: &str, base_url: &Url) -> WebMetadata {
         title: open_graph_title.or(page_title),
         description: open_graph_description.or(page_description),
         canonical_url,
+        // 正文摘要由调用方在拿到 HTML 后统一补，元数据解析只负责标签。
+        excerpt: None,
     }
 }
 

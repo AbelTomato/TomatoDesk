@@ -6,7 +6,10 @@ use crate::{
         Capture, CaptureBody, CaptureCounts, CaptureCursor, CaptureKind, CapturePage,
         CapturePageQuery, CaptureSort, CaptureSummary, NewCapture,
     },
-    infrastructure::db::{Database, DbError, DbResult},
+    infrastructure::{
+        db::{Database, DbError, DbResult},
+        link_label::LinkLabels,
+    },
 };
 
 use super::parse_value;
@@ -213,6 +216,35 @@ impl CaptureRepository {
                     capture.title,
                     capture.summary,
                     capture.note
+                ],
+            )?;
+            Ok(changed > 0)
+        })
+    }
+
+    /// 后台补全链接标签：只有当前 title / summary 仍是入库时写入的兜底值才覆盖，
+    /// 用户改过任意一个就放弃，改标题不该被后台悄悄改回去。
+    ///
+    /// `IS` 提供 NULL 安全比较；不更新 `updated_at`，避免补全把旧记录顶到列表顶部。
+    pub fn update_link_metadata(
+        &self,
+        id: &str,
+        labels: &LinkLabels,
+        url: &str,
+        expected_title: Option<&str>,
+        expected_summary: Option<&str>,
+    ) -> DbResult<bool> {
+        self.database.with_connection(|connection| {
+            let changed = connection.execute(
+                "UPDATE captures SET title = ?2, summary = ?3, url = ?4
+                 WHERE id = ?1 AND title IS ?5 AND summary IS ?6",
+                params![
+                    id,
+                    labels.title,
+                    labels.summary,
+                    url,
+                    expected_title,
+                    expected_summary
                 ],
             )?;
             Ok(changed > 0)

@@ -33,10 +33,12 @@ pub fn show_quick_capture_window<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
+/// 保存完成后只收起随手记窗口，不把主窗口带到前台。
+/// 用户通常是在别的应用里按快捷键记录，主窗口是否已经打开由用户自己决定。
 pub fn complete_quick_capture<R: Runtime>(app: &AppHandle<R>) {
     hide_quick_capture_window(app);
-    show_main_window(app);
     if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+        // 主窗口隐藏时事件也会被收到，下次打开时数据和角标已经是最新的。
         let _ = window.emit("quick-capture-completed", ());
     }
 }

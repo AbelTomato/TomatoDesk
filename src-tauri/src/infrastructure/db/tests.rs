@@ -8,6 +8,7 @@ use crate::domain::{
     ThreadRelationship, ThreadState, ThreadSummary, TriageOutcome,
 };
 use crate::infrastructure::email::{EmailConfig, account_id};
+use crate::infrastructure::link_label::LinkLabels;
 use uuid::Uuid;
 
 fn capture(title: &str, body: &str) -> NewCapture {
@@ -143,6 +144,107 @@ fn fts_tracks_capture_insert_update_and_delete() {
 
     captures.delete(&created.id).unwrap();
     assert!(captures.search("SQLite").unwrap().is_empty());
+}
+
+#[test]
+fn conditional_link_metadata_update_keeps_user_edits() {
+    let db = Database::in_memory().unwrap();
+    let captures = db.captures();
+    let created = captures
+        .create(NewCapture {
+            kind: CaptureKind::Link,
+            source: "quick_capture".into(),
+            url: Some("https://example.com/posts/hello".into()),
+            title: Some("posts / hello · example.com".into()),
+            summary: Some("example.com · posts / hello".into()),
+            note: None,
+            body: None,
+            repo_id: None,
+        })
+        .unwrap();
+
+    let labels = LinkLabels {
+        title: "Hello World".into(),
+        summary: "example.com — 摘要".into(),
+    };
+    assert!(
+        captures
+            .update_link_metadata(
+                &created.id,
+                &labels,
+                "https://example.com/posts/hello",
+                created.title.as_deref(),
+                created.summary.as_deref(),
+            )
+            .unwrap()
+    );
+    let updated = captures.get(&created.id).unwrap().unwrap();
+    assert_eq!(updated.title.as_deref(), Some("Hello World"));
+    // 补全不改变列表排序依据，否则旧记录会被顶到顶部。
+    assert_eq!(updated.updated_at, created.updated_at);
+
+    let mut edited = updated.clone();
+    edited.title = Some("我自己的标题".into());
+    captures.update(&edited).unwrap();
+    let second = LinkLabels {
+        title: "Hello World Again".into(),
+        summary: "再次抓到的摘要".into(),
+    };
+    // 期望值仍是入库时的兜底标签：用户改过标题后，后到的抓取结果不能再覆盖。
+    assert!(
+        !captures
+            .update_link_metadata(
+                &created.id,
+                &second,
+                "https://example.com/posts/hello",
+                created.title.as_deref(),
+                created.summary.as_deref(),
+            )
+            .unwrap()
+    );
+    assert_eq!(
+        captures.get(&created.id).unwrap().unwrap().title.as_deref(),
+        Some("我自己的标题")
+    );
+}
+
+/// 旧记录可能没有标题和摘要，`IS` 要让 NULL 与 NULL 也算相等，否则永远补不上。
+#[test]
+fn conditional_link_metadata_update_accepts_empty_labels() {
+    let db = Database::in_memory().unwrap();
+    let captures = db.captures();
+    let created = captures
+        .create(NewCapture {
+            kind: CaptureKind::Link,
+            source: "quick_capture".into(),
+            url: Some("https://example.com/a".into()),
+            title: None,
+            summary: None,
+            note: None,
+            body: None,
+            repo_id: None,
+        })
+        .unwrap();
+
+    let labels = LinkLabels {
+        title: "a · example.com".into(),
+        summary: "example.com · a".into(),
+    };
+    assert!(
+        captures
+            .update_link_metadata(
+                &created.id,
+                &labels,
+                "https://example.com/a",
+                created.title.as_deref(),
+                created.summary.as_deref(),
+            )
+            .unwrap()
+    );
+    assert_eq!(
+        captures.get(&created.id).unwrap().unwrap().title.as_deref(),
+        Some("a · example.com")
+    );
 }
 
 #[test]

@@ -8,6 +8,7 @@ import {
   archiveCapture,
   countCaptures,
   createTag,
+  getCapture,
   getCaptureBody,
   getCaptureTags,
   listCapturesPage,
@@ -60,6 +61,8 @@ function CapturesPage() {
   const requestId = useRef(0);
   const searchRef = useRef<HTMLInputElement | null>(null);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
+  /** 当前列表里的 id：后台补全只更新已经看得见的那一行，避免整页重载丢掉翻页进度。 */
+  const loadedIdsRef = useRef<Set<string>>(new Set());
 
   const searching = query.trim().length > 0;
 
@@ -159,6 +162,37 @@ function CapturesPage() {
       void listener.then((stop) => stop()).catch(() => {});
     };
   }, [loadFirstPage]);
+
+  useEffect(() => {
+    loadedIdsRef.current = new Set(captures.map((capture) => capture.id));
+  }, [captures]);
+
+  // 链接抓取完成后替换那一行的标题与摘要；用户已经改过标题时后端不会写入，事件也不会发。
+  useEffect(() => {
+    if (!isTauri() || searching) return;
+    let disposed = false;
+    const listener = getCurrentWindow().listen<string>("capture-enriched", (event) => {
+      const id = event.payload;
+      if (disposed || !loadedIdsRef.current.has(id)) return;
+      void getCapture(id)
+        .then((updated) => {
+          if (disposed) return;
+          setCaptures((current) =>
+            current.map((capture) => (capture.id === id ? { ...capture, ...updated } : capture)),
+          );
+        })
+        .catch(() => {
+          // 单行刷新失败不值得打扰用户，下次刷新列表还会拿到最新值。
+        });
+    });
+    void listener.then((stop) => {
+      if (disposed) stop();
+    });
+    return () => {
+      disposed = true;
+      void listener.then((stop) => stop()).catch(() => {});
+    };
+  }, [searching]);
 
   useEffect(() => {
     function focusSearch(event: KeyboardEvent) {

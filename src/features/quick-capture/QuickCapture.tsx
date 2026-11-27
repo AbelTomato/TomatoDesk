@@ -4,9 +4,11 @@ import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { Button, Input, Textarea } from "../../components/ui";
-import { captureFromClipboard, dismissCapture } from "../../lib/api";
+import { captureFromClipboard, dismissCapture, finishCapture } from "../../lib/api";
 
 const MAX_CAPTURE_LENGTH = 16_384;
+/** 成功反馈停留一小会儿再收起窗口，足够看清但不打断手头的事。 */
+const SAVED_HINT_MS = 1000;
 
 function normalizeWebUrl(value: string): string | null {
   const trimmed = value.trim();
@@ -38,9 +40,11 @@ function QuickCapture() {
   const [note, setNote] = useState("");
   const [readingClipboard, setReadingClipboard] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const valueRef = useRef<HTMLTextAreaElement | null>(null);
   const urlRef = useRef<HTMLInputElement | null>(null);
+  const hideTimerRef = useRef<number | null>(null);
   const linkUrl = normalizeWebUrl(value);
   const overLimit = value.length > MAX_CAPTURE_LENGTH || note.length > MAX_CAPTURE_LENGTH;
 
@@ -52,10 +56,15 @@ function QuickCapture() {
     let unlisten: (() => void) | undefined;
 
     async function loadClipboard() {
+      if (hideTimerRef.current !== null) {
+        window.clearTimeout(hideTimerRef.current);
+        hideTimerRef.current = null;
+      }
       setValue("");
       setNote("");
       setError(null);
       setSaving(false);
+      setSaved(false);
       setReadingClipboard(true);
       try {
         const text = (await readText()).trim();
@@ -90,6 +99,10 @@ function QuickCapture() {
 
     return () => {
       disposed = true;
+      if (hideTimerRef.current !== null) {
+        window.clearTimeout(hideTimerRef.current);
+        hideTimerRef.current = null;
+      }
       unlisten?.();
       if (!unlisten) void listener.then((stopListening) => stopListening()).catch(() => {});
     };
@@ -97,12 +110,19 @@ function QuickCapture() {
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!value.trim() || overLimit || saving) return;
+    if (!value.trim() || overLimit || saving || saved) return;
 
     setSaving(true);
     setError(null);
     try {
       await captureFromClipboard({ value, note: linkUrl ? note : null });
+      setSaving(false);
+      setSaved(true);
+      // 先留在原页面给一句成功提示，再收起；不打开主窗口。
+      hideTimerRef.current = window.setTimeout(() => {
+        hideTimerRef.current = null;
+        void finishCapture().catch(() => undefined);
+      }, SAVED_HINT_MS);
     } catch (captureError) {
       setError(captureError instanceof Error ? captureError.message : "保存失败，请重试。");
       setSaving(false);
@@ -110,6 +130,10 @@ function QuickCapture() {
   }
 
   async function close() {
+    if (hideTimerRef.current !== null) {
+      window.clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = null;
+    }
     try {
       await dismissCapture();
     } catch {
@@ -161,7 +185,7 @@ function QuickCapture() {
               />
             </label>
             <p className="text-xs leading-5 text-muted-foreground">
-              保存时会尝试读取标题、描述和规范链接；网络失败时仍保留 URL 与备注。
+              保存后先用站点和路径命名，网页标题会在后台自动补全。
             </p>
           </>
         ) : (
@@ -182,15 +206,20 @@ function QuickCapture() {
         )}
 
         <footer className="flex items-center justify-between gap-3 border-t border-border pt-3">
-          <p className="min-w-0 text-xs text-destructive" role="status">
-            {error ?? (overLimit ? `内容不能超过 ${MAX_CAPTURE_LENGTH} 个字符。` : "")}
+          <p
+            className={`min-w-0 text-xs ${saved ? "text-success" : "text-destructive"}`}
+            role="status"
+          >
+            {saved
+              ? "已保存到随手记"
+              : (error ?? (overLimit ? `内容不能超过 ${MAX_CAPTURE_LENGTH} 个字符。` : ""))}
           </p>
           <Button
             type="submit"
             className="shrink-0"
-            disabled={!value.trim() || overLimit || saving}
+            disabled={!value.trim() || overLimit || saving || saved}
           >
-            {saving ? "保存中…" : "保存到随手记"}
+            {saved ? "已保存" : saving ? "保存中…" : "保存到随手记"}
           </Button>
         </footer>
       </form>
