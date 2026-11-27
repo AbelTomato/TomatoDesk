@@ -4,10 +4,10 @@ use crate::{
     commands::{
         captures,
         dto::{
-            CountCapturesInput, CreateCaptureInput, CreateTagInput, CreateTaskInput, IdInput,
-            IngestInboxMessageInput, ListCapturesPageInput, ListInboxMessagesInput,
-            ListRepoThreadsInput, ListTasksPageInput, SearchCapturesInput, SetCaptureTagsInput,
-            UpdateCaptureInput, UpdateRepoMetaInput, UpdateTaskInput,
+            CountCapturesInput, CountInboxMessagesInput, CreateCaptureInput, CreateTagInput,
+            CreateTaskInput, IdInput, IngestInboxMessageInput, ListCapturesPageInput,
+            ListInboxMessagesInput, ListRepoThreadsInput, ListTasksPageInput, SearchCapturesInput,
+            SetCaptureTagsInput, UpdateCaptureInput, UpdateRepoMetaInput, UpdateTaskInput,
         },
         error::CommandErrorCode,
         inbox, repos, tags, tasks,
@@ -684,10 +684,17 @@ fn inbox_commands_ingest_triage_and_convert_exactly_once() {
         ids.push(message.id);
     }
 
-    let counts = inbox::count_inbox_pending_in(&database).unwrap();
+    let counts =
+        inbox::count_inbox_messages_in(&database, CountInboxMessagesInput::default()).unwrap();
     assert_eq!(
-        (counts.all, counts.pending, counts.unread),
-        (3, 3, 3),
+        (
+            counts.all,
+            counts.pending,
+            counts.task,
+            counts.dismissed,
+            counts.unread
+        ),
+        (3, 3, 0, 0, 3),
         "every ingested message starts pending and unread"
     );
 
@@ -702,7 +709,12 @@ fn inbox_commands_ingest_triage_and_convert_exactly_once() {
         "read stamps read_at, not triaged_at"
     );
     assert_eq!(read.triaged_at, None);
-    assert_eq!(inbox::count_inbox_pending_in(&database).unwrap().unread, 2);
+    assert_eq!(
+        inbox::count_inbox_messages_in(&database, CountInboxMessagesInput::default())
+            .unwrap()
+            .unread,
+        2
+    );
 
     let unread =
         inbox::mark_inbox_message_unread_in(&database, IdInput { id: ids[0].clone() }).unwrap();
@@ -711,7 +723,7 @@ fn inbox_commands_ingest_triage_and_convert_exactly_once() {
     let page = inbox::list_inbox_messages_page_in(
         &database,
         ListInboxMessagesInput {
-            triaged: Some(false),
+            tab: Some("pending".into()),
             unread_only: true,
             category: None,
             source_id: None,
@@ -728,7 +740,7 @@ fn inbox_commands_ingest_triage_and_convert_exactly_once() {
     let next = inbox::list_inbox_messages_page_in(
         &database,
         ListInboxMessagesInput {
-            triaged: Some(false),
+            tab: Some("pending".into()),
             unread_only: true,
             category: None,
             source_id: None,
@@ -743,7 +755,7 @@ fn inbox_commands_ingest_triage_and_convert_exactly_once() {
     let filtered = inbox::list_inbox_messages_page_in(
         &database,
         ListInboxMessagesInput {
-            triaged: None,
+            tab: Some("all".into()),
             unread_only: false,
             category: Some("release".into()),
             source_id: None,
@@ -758,7 +770,12 @@ fn inbox_commands_ingest_triage_and_convert_exactly_once() {
         inbox::dismiss_inbox_message_in(&database, IdInput { id: ids[0].clone() }).unwrap();
     assert_eq!(dismissed.triage_outcome, Some(TriageOutcome::Dismissed));
     assert!(dismissed.triaged_at.is_some());
-    assert_eq!(inbox::count_inbox_pending_in(&database).unwrap().pending, 2);
+    assert_eq!(
+        inbox::count_inbox_messages_in(&database, CountInboxMessagesInput::default())
+            .unwrap()
+            .pending,
+        2
+    );
 
     let task =
         inbox::convert_inbox_message_to_task_in(&database, IdInput { id: ids[1].clone() }).unwrap();
@@ -776,10 +793,59 @@ fn inbox_commands_ingest_triage_and_convert_exactly_once() {
         "the task note carries the summary and the source link"
     );
 
-    let triaged = inbox::list_inbox_messages_page_in(
+    let counts =
+        inbox::count_inbox_messages_in(&database, CountInboxMessagesInput::default()).unwrap();
+    assert_eq!(
+        (
+            counts.all,
+            counts.pending,
+            counts.task,
+            counts.dismissed,
+            counts.unread
+        ),
+        (3, 1, 1, 1, 3),
+        "three tabs are exclusive and add up to all; unread covers processed rows too"
+    );
+
+    let list_tab = |tab: &str| {
+        inbox::list_inbox_messages_page_in(
+            &database,
+            ListInboxMessagesInput {
+                tab: Some(tab.into()),
+                unread_only: false,
+                category: None,
+                source_id: None,
+                cursor: None,
+                limit: None,
+            },
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        list_tab("pending").messages.len(),
+        1,
+        "only the untouched message stays pending"
+    );
+    assert_eq!(
+        list_tab("task")
+            .messages
+            .first()
+            .map(|item| item.id.as_str()),
+        Some(ids[1].as_str())
+    );
+    assert_eq!(
+        list_tab("dismissed")
+            .messages
+            .first()
+            .map(|item| item.id.as_str()),
+        Some(ids[0].as_str())
+    );
+    assert_eq!(list_tab("all").messages.len(), 3);
+
+    let error = inbox::list_inbox_messages_page_in(
         &database,
         ListInboxMessagesInput {
-            triaged: Some(true),
+            tab: Some("triaged".into()),
             unread_only: false,
             category: None,
             source_id: None,
@@ -787,11 +853,11 @@ fn inbox_commands_ingest_triage_and_convert_exactly_once() {
             limit: None,
         },
     )
-    .unwrap();
+    .unwrap_err();
     assert_eq!(
-        triaged.messages.len(),
-        2,
-        "dismiss and convert both count as triaged"
+        error.code,
+        CommandErrorCode::Validation,
+        "an unknown tab is rejected instead of silently falling back to all"
     );
 
     let again =
@@ -838,6 +904,56 @@ fn inbox_commands_ingest_triage_and_convert_exactly_once() {
     .unwrap_err();
     assert_eq!(error.code, CommandErrorCode::Validation);
     assert_eq!(error.message, "payloadJson must be valid JSON");
+}
+
+#[test]
+fn inbox_counts_follow_category_but_not_the_active_tab() {
+    let database = Database::in_memory().unwrap();
+    for (index, category) in ["mention", "mention", "ci_failed"].iter().enumerate() {
+        inbox::ingest_inbox_message_in(
+            &database,
+            inbox_input(
+                &format!("count-{index}"),
+                category,
+                &format!("计数 {index}"),
+                index as u32,
+            ),
+        )
+        .unwrap();
+    }
+
+    let all =
+        inbox::count_inbox_messages_in(&database, CountInboxMessagesInput::default()).unwrap();
+    assert_eq!((all.all, all.pending), (3, 3));
+
+    let mentions = inbox::count_inbox_messages_in(
+        &database,
+        CountInboxMessagesInput {
+            source_id: None,
+            category: Some("mention".into()),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        (
+            mentions.all,
+            mentions.pending,
+            mentions.task,
+            mentions.dismissed
+        ),
+        (2, 2, 0, 0),
+        "counts follow the category filter so tabs still add up to all"
+    );
+
+    let blank = inbox::count_inbox_messages_in(
+        &database,
+        CountInboxMessagesInput {
+            source_id: Some("   ".into()),
+            category: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(blank.all, 3, "a blank source filter means no filter");
 }
 
 #[test]

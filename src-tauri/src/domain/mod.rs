@@ -19,8 +19,8 @@ pub use github::{
 };
 pub use inbox::{
     EmailAccountProbe, EmailAccountStatus, EmailTls, InboxCounts, InboxMessage, InboxMessageCursor,
-    InboxPage, InboxPageQuery, InboxReadBack, InboxReadBackStatus, InboxSource, InboxSourceKind,
-    NewInboxMessage, ReadBackErrorKind, ReadBackStatus, TriageOutcome,
+    InboxPage, InboxPageQuery, InboxReadBack, InboxReadBackStatus, InboxScope, InboxSource,
+    InboxSourceKind, InboxTab, NewInboxMessage, ReadBackErrorKind, ReadBackStatus, TriageOutcome,
 };
 pub use sync_run::{NewSyncRun, SyncRun, SyncRunStatus};
 pub use tag::Tag;

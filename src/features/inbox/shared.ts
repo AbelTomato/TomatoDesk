@@ -1,4 +1,4 @@
-import type { InboxSource, InboxSourceKind, TriageOutcome } from "../../lib/api";
+import type { InboxSource, InboxSourceKind, InboxTab, TriageOutcome } from "../../lib/api";
 
 const categoryLabels: Record<string, string> = {
   mention: "提及",
@@ -38,6 +38,36 @@ export const triageLabels: Record<TriageOutcome, string> = {
   dismissed: "已忽略",
   task: "已转待办",
   capture: "已转为随手记",
+};
+
+/** Tab 顺序即状态轴顺序；「全部」放最后，计数恰好是前三个之和。 */
+export const inboxTabOrder: InboxTab[] = ["pending", "task", "dismissed", "all"];
+
+export const tabLabels: Record<InboxTab, string> = {
+  pending: "待处理",
+  task: "已转待办",
+  dismissed: "已忽略",
+  all: "全部",
+};
+
+/** 空态只说现在的状态，不解释模型；「只看未读」另有自己的空态。 */
+export const emptyHints: Record<InboxTab, { title: string; hint: string }> = {
+  pending: {
+    title: "收件箱已清空",
+    hint: "新消息会在下次同步后出现在这里。",
+  },
+  task: {
+    title: "还没有转成待办的消息",
+    hint: "把需要跟进的消息转为待办后，会留在这里备查。",
+  },
+  dismissed: {
+    title: "还没有忽略的消息",
+    hint: "忽略的消息会留在这里，需要时可以回头找。",
+  },
+  all: {
+    title: "收件箱是空的",
+    hint: "配置 GitHub Token 或邮箱账户后，消息会自动同步进来。",
+  },
 };
 
 /**

@@ -5,8 +5,8 @@ use crate::{
     commands::error::{CommandError, CommandResult},
     domain::{
         CaptureCursor, CaptureKind, CapturePageQuery, CaptureSort, EmailTls, InboxMessageCursor,
-        InboxPageQuery, NewInboxMessage, TaskCursor, TaskPageQuery, TaskStatus, ThreadKind,
-        ThreadQuery, ThreadRelationship, ThreadState,
+        InboxPageQuery, InboxScope, InboxTab, NewInboxMessage, TaskCursor, TaskPageQuery,
+        TaskStatus, ThreadKind, ThreadQuery, ThreadRelationship, ThreadState,
     },
 };
 
@@ -36,6 +36,18 @@ const MAX_PAGE_SIZE: u32 = 200;
 pub(super) fn parse_input<T: DeserializeOwned>(input: Option<Value>) -> CommandResult<T> {
     let input = input.ok_or_else(|| CommandError::validation("input is required"))?;
     serde_json::from_value(input).map_err(|_| CommandError::validation("input is invalid"))
+}
+
+/// 可选入参：前端不传时取 `Default`，免得为了「没有筛选」专门造一个空对象。
+pub(super) fn parse_optional_input<T: DeserializeOwned + Default>(
+    input: Option<Value>,
+) -> CommandResult<T> {
+    match input {
+        Some(value) => {
+            serde_json::from_value(value).map_err(|_| CommandError::validation("input is invalid"))
+        }
+        None => Ok(T::default()),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -390,8 +402,8 @@ impl ListTasksPageInput {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ListInboxMessagesInput {
-    /// `None` 表示全部；`false` 只看未判断；`true` 只看已判断。
-    pub triaged: Option<bool>,
+    /// 缺省为 `pending`（待处理）；非法值按校验错误处理，不静默退回「全部」。
+    pub tab: Option<String>,
     #[serde(default)]
     pub unread_only: bool,
     pub category: Option<String>,
@@ -408,6 +420,12 @@ impl ListInboxMessagesInput {
                 "limit must be between 1 and {MAX_PAGE_SIZE}"
             )));
         }
+        let tab = match self.tab.as_deref().map(str::trim) {
+            Some(raw) if !raw.is_empty() => raw.parse::<InboxTab>().map_err(|_| {
+                CommandError::validation("tab must be one of pending, task, dismissed, all")
+            })?,
+            _ => InboxTab::Pending,
+        };
         let cursor = match self.cursor.as_deref().map(str::trim) {
             Some(raw) if !raw.is_empty() => {
                 Some(InboxMessageCursor::parse(raw).ok_or_else(|| {
@@ -417,13 +435,31 @@ impl ListInboxMessagesInput {
             _ => None,
         };
         Ok(InboxPageQuery {
-            triaged: self.triaged,
-            unread_only: self.unread_only,
-            category: optional_text("category", self.category, MAX_CATEGORY_LENGTH)?,
-            source_id: optional_text("sourceId", self.source_id, MAX_ID_LENGTH)?,
+            scope: InboxScope {
+                tab,
+                unread_only: self.unread_only,
+                category: optional_text("category", self.category, MAX_CATEGORY_LENGTH)?,
+                source_id: optional_text("sourceId", self.source_id, MAX_ID_LENGTH)?,
+            },
             cursor,
             limit,
         })
+    }
+}
+
+/// 计数入参只接受来源与分类：Tab 与未读不参与，四个 Tab 的数字才能相加等于「全部」。
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CountInboxMessagesInput {
+    pub source_id: Option<String>,
+    pub category: Option<String>,
+}
+
+impl CountInboxMessagesInput {
+    pub(super) fn validate(mut self) -> CommandResult<Self> {
+        self.source_id = optional_text("sourceId", self.source_id.take(), MAX_ID_LENGTH)?;
+        self.category = optional_text("category", self.category.take(), MAX_CATEGORY_LENGTH)?;
+        Ok(self)
     }
 }
 

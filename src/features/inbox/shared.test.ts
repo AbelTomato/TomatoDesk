@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import type { InboxSource } from "../../lib/api";
-import { isEmailMessage, latestSyncedAt } from "./shared";
+import {
+  emptyHints,
+  inboxTabOrder,
+  isEmailMessage,
+  latestSyncedAt,
+  tabLabels,
+} from "./shared";
 
 const source = (overrides: Partial<InboxSource> = {}): InboxSource => ({
   id: "source-github",
@@ -50,6 +56,26 @@ describe("latestSyncedAt", () => {
   it("skips values that cannot be parsed and returns null when nothing is left", () => {
     expect(latestSyncedAt([source({ lastSyncedAt: "not-a-date" })])).toBeNull();
     expect(latestSyncedAt([])).toBeNull();
+  });
+});
+
+describe("inbox tabs", () => {
+  it("keeps four tabs in status order with a label and an empty state each", () => {
+    expect(inboxTabOrder).toEqual(["pending", "task", "dismissed", "all"]);
+    for (const tab of inboxTabOrder) {
+      expect(tabLabels[tab]).toBeTruthy();
+      expect(emptyHints[tab].title).toBeTruthy();
+      expect(emptyHints[tab].hint).toBeTruthy();
+    }
+  });
+
+  it("names each outcome instead of one generic triaged bucket", () => {
+    expect(tabLabels).toEqual({
+      pending: "待处理",
+      task: "已转待办",
+      dismissed: "已忽略",
+      all: "全部",
+    });
   });
 });
 

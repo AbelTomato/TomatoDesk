@@ -7,7 +7,10 @@ use crate::{
 };
 
 use super::{
-    dto::{IdInput, IngestInboxMessageInput, ListInboxMessagesInput, parse_input},
+    dto::{
+        CountInboxMessagesInput, IdInput, IngestInboxMessageInput, ListInboxMessagesInput,
+        parse_input, parse_optional_input,
+    },
     error::{CommandError, CommandResult},
 };
 
@@ -19,10 +22,17 @@ pub(super) fn list_inbox_messages_page_in(
     database.inbox_messages().page(&query).map_err(Into::into)
 }
 
-/// 名字沿用方案里的 `count_inbox_pending`；一次查询同时返回全部三个计数，
-/// 导航角标取 `pending`，标签页取 `all`，不再多开命令。
-pub(super) fn count_inbox_pending_in(database: &Database) -> CommandResult<InboxCounts> {
-    database.inbox_messages().counts().map_err(Into::into)
+/// 一次查询同时返回五个计数：导航角标取 `pending`，四个 Tab 各取自己的一项。
+/// 只按来源与分类过滤，切 Tab 不会让数字变化。
+pub(super) fn count_inbox_messages_in(
+    database: &Database,
+    input: CountInboxMessagesInput,
+) -> CommandResult<InboxCounts> {
+    let input = input.validate()?;
+    database
+        .inbox_messages()
+        .counts(input.source_id.as_deref(), input.category.as_deref())
+        .map_err(Into::into)
 }
 
 pub(super) fn list_inbox_sources_in(database: &Database) -> CommandResult<Vec<InboxSource>> {
@@ -124,8 +134,11 @@ pub fn list_inbox_messages_page(
 }
 
 #[tauri::command]
-pub fn count_inbox_pending(database: State<'_, Database>) -> CommandResult<InboxCounts> {
-    count_inbox_pending_in(&database)
+pub fn count_inbox_messages(
+    database: State<'_, Database>,
+    input: Option<serde_json::Value>,
+) -> CommandResult<InboxCounts> {
+    count_inbox_messages_in(&database, parse_optional_input(input)?)
 }
 
 #[tauri::command]

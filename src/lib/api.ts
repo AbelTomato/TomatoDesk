@@ -192,6 +192,9 @@ export interface UpdateTaskInput {
 export type InboxSourceKind = "github" | "email" | "rss" | "manual";
 export type TriageOutcome = "dismissed" | "task" | "capture";
 
+/** 收件箱状态轴：四个 Tab 互斥且穷尽，结果本身就是 Tab。 */
+export type InboxTab = "pending" | "task" | "dismissed" | "all";
+
 export interface InboxSource {
   id: string;
   kind: InboxSourceKind;
@@ -233,8 +236,8 @@ export interface InboxPage {
 }
 
 export interface InboxPageInput {
-  /** undefined / null 表示全部；false 只看未判断；true 只看已判断。 */
-  triaged?: boolean | null;
+  /** 缺省为 `pending`（待处理）。 */
+  tab?: InboxTab | null;
   unreadOnly?: boolean;
   category?: string | null;
   sourceId?: string | null;
@@ -242,9 +245,18 @@ export interface InboxPageInput {
   limit?: number;
 }
 
+/** 计数只随来源与分类变化：切 Tab 时四个数字必须还能相加等于「全部」。 */
+export interface InboxCountFilter {
+  sourceId?: string | null;
+  category?: string | null;
+}
+
 export interface InboxCounts {
   all: number;
   pending: number;
+  task: number;
+  dismissed: number;
+  /** 与「只看未读」同一口径：`readAt` 为空，不要求未处理。 */
   unread: number;
 }
 
@@ -640,9 +652,9 @@ export async function listInboxMessagesPage(input: InboxPageInput): Promise<Inbo
   return mocked ?? call("list_inbox_messages_page", { input });
 }
 
-export async function countInboxPending(): Promise<InboxCounts> {
-  const mocked = await preview((data) => data.inboxCounts());
-  return mocked ?? call("count_inbox_pending");
+export async function countInboxMessages(input?: InboxCountFilter): Promise<InboxCounts> {
+  const mocked = await preview((data) => data.inboxCounts(input));
+  return mocked ?? call("count_inbox_messages", { input: input ?? {} });
 }
 
 export async function listInboxSources(): Promise<InboxSource[]> {

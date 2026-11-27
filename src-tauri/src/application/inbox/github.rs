@@ -127,7 +127,7 @@ pub(crate) async fn sync(database: &Database) -> Result<InboxSyncSummary, String
         .map_err(|error| error.to_string())?;
     let counts = database
         .inbox_messages()
-        .counts()
+        .counts(None, None)
         .map_err(|error| error.to_string())?;
 
     Ok(InboxSyncSummary {

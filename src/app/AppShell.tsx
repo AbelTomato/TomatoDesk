@@ -13,7 +13,7 @@ import TasksPage from "../features/tasks/TasksPage";
 import UpdateBanner from "../features/update/UpdateBanner";
 import {
   countCaptures,
-  countInboxPending,
+  countInboxMessages,
   countTasks,
   getMigrationNotice,
   openCapture,
@@ -28,7 +28,13 @@ type View = "inbox" | "tasks" | "captures" | "repos" | "search" | "settings";
 
 const emptyCounts: CaptureCounts = { all: 0, active: 0, archived: 0 };
 const emptyTaskCounts: TaskCounts = { open: 0, done: 0, cancelled: 0, all: 0 };
-const emptyInboxCounts: InboxCounts = { all: 0, pending: 0, unread: 0 };
+const emptyInboxCounts: InboxCounts = {
+  all: 0,
+  pending: 0,
+  task: 0,
+  dismissed: 0,
+  unread: 0,
+};
 
 const navItems: Array<{ id: View; label: string }> = [
   { id: "inbox", label: "收件箱" },
@@ -75,7 +81,7 @@ function AppShell() {
     const [captures, tasks, inbox] = await Promise.allSettled([
       countCaptures(),
       countTasks(),
-      countInboxPending(),
+      countInboxMessages(),
     ]);
     if (captures.status === "fulfilled") setCounts(captures.value);
     if (tasks.status === "fulfilled") setTaskCounts(tasks.value);

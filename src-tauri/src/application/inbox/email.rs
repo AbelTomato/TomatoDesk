@@ -367,7 +367,7 @@ async fn sync_selected(
                 backoff.clear(&account.id);
                 let pending_count = database
                     .inbox_messages()
-                    .counts()
+                    .counts(None, None)
                     .map_or(0, |counts| counts.pending);
                 events.push(Some(InboxSyncSummary {
                     source_id: outcome.source_id,
@@ -757,7 +757,14 @@ mod tests {
         assert_eq!(result.fetched_count, 2);
         assert_eq!(result.ingested_count, 2);
         assert_eq!(result.source_id, account.id);
-        assert_eq!(database.inbox_messages().counts().expect("计数").pending, 2);
+        assert_eq!(
+            database
+                .inbox_messages()
+                .counts(None, None)
+                .expect("计数")
+                .pending,
+            2
+        );
         assert_eq!(
             stored_cursor(&database, &account),
             Some(MailCursor {
@@ -811,7 +818,11 @@ mod tests {
         sync_account(&database, &account, "授权码", &fetcher, deadline()).expect("第二轮");
 
         assert_eq!(
-            database.inbox_messages().counts().expect("计数").all,
+            database
+                .inbox_messages()
+                .counts(None, None)
+                .expect("计数")
+                .all,
             2,
             "同一 Message-ID 重复同步必须只有一行"
         );
@@ -897,7 +908,11 @@ mod tests {
         sync_account(&database, &account, "授权码", &fetcher, deadline()).expect("重扫");
 
         assert_eq!(
-            database.inbox_messages().counts().expect("计数").all,
+            database
+                .inbox_messages()
+                .counts(None, None)
+                .expect("计数")
+                .all,
             3,
             "UID 重排后重扫，老邮件靠 Message-ID 去重"
         );
@@ -930,7 +945,14 @@ mod tests {
         let result = sync_account(&database, &healthy, "授权码", &fetcher, deadline())
             .expect("另一个账户不受影响");
         assert_eq!(result.ingested_count, 1);
-        assert_eq!(database.inbox_messages().counts().expect("计数").all, 1);
+        assert_eq!(
+            database
+                .inbox_messages()
+                .counts(None, None)
+                .expect("计数")
+                .all,
+            1
+        );
     }
 
     #[test]

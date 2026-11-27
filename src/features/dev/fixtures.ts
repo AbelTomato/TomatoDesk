@@ -12,12 +12,14 @@ import type {
   GithubRelease,
   GithubRepo,
   GithubSyncRun,
+  InboxCountFilter,
   InboxCounts,
   InboxMessage,
   InboxPage,
   InboxPageInput,
   InboxReadBackStatus,
   InboxSource,
+  InboxTab,
   MigrationNotice,
   RepoDetail,
   RepoSummary,
@@ -455,18 +457,40 @@ const messages: InboxMessage[] = [
   },
 ];
 
-const inboxCounts = (): InboxCounts => ({
-  all: messages.length,
-  pending: messages.filter((message) => !message.triagedAt).length,
-  unread: messages.filter((message) => !message.readAt && !message.triagedAt).length,
-});
+/** 与后端 `push_scope` 一一对应：四个 Tab 各自一段条件。 */
+const matchesTab = (message: InboxMessage, tab: InboxTab): boolean => {
+  switch (tab) {
+    case "pending":
+      return !message.triagedAt;
+    case "task":
+      return message.triageOutcome === "task";
+    case "dismissed":
+      return message.triageOutcome === "dismissed";
+    case "all":
+      return true;
+  }
+};
+
+/** 计数只随来源与分类变化，与后端 `counts(source_id, category)` 同口径。 */
+const inboxCounts = (input?: InboxCountFilter): InboxCounts => {
+  const scoped = messages.filter(
+    (message) =>
+      (!input?.sourceId || message.sourceId === input.sourceId) &&
+      (!input?.category || message.category === input.category),
+  );
+  return {
+    all: scoped.length,
+    pending: scoped.filter((message) => !message.triagedAt).length,
+    task: scoped.filter((message) => message.triageOutcome === "task").length,
+    dismissed: scoped.filter((message) => message.triageOutcome === "dismissed").length,
+    unread: scoped.filter((message) => !message.readAt).length,
+  };
+};
 
 const inboxPage = (input: InboxPageInput): InboxPage => {
   const filtered = [...messages]
     .sort((left, right) => right.occurredAt.localeCompare(left.occurredAt))
-    .filter((message) =>
-      input.triaged == null ? true : Boolean(message.triagedAt) === input.triaged,
-    )
+    .filter((message) => matchesTab(message, input.tab ?? "pending"))
     .filter((message) => !input.unreadOnly || !message.readAt)
     .filter((message) => !input.category || message.category === input.category)
     .filter((message) => !input.sourceId || message.sourceId === input.sourceId);

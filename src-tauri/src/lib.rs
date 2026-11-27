@@ -66,7 +66,7 @@ pub fn run() {
             commands::cancel_task,
             commands::reopen_task,
             commands::list_inbox_messages_page,
-            commands::count_inbox_pending,
+            commands::count_inbox_messages,
             commands::list_inbox_sources,
             commands::list_email_accounts,
             commands::test_email_account,

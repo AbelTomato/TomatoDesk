@@ -70,6 +70,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../migrations/0008_inbox_read_back.sql"),
         message: None,
     },
+    Migration {
+        version: 9,
+        name: "inbox_v06",
+        sql: include_str!("../../../migrations/0009_inbox_v06.sql"),
+        message: None,
+    },
 ];
 
 /// 本次启动执行了迁移时留下的痕迹，供前端提示。

@@ -175,14 +175,62 @@ pub struct InboxMessage {
     pub related_id: Option<String>,
 }
 
-/// 列表查询：来源、类型、未判断、未读四个筛选与键集游标都下沉到 SQL。
-#[derive(Debug, Clone)]
-pub struct InboxPageQuery {
-    /// `None` 表示全部；`false` 只看未判断；`true` 只看已判断。
-    pub triaged: Option<bool>,
+/// 收件箱的状态轴。四个 Tab 互斥且穷尽，结果直接成为 Tab，不再用减法凑数。
+///
+/// `Capture` 结果在 MVP 里不会写入，所以 `Pending` / `Task` / `Dismissed` 覆盖了
+/// 现有全部数据；将来启用「提取为随手记」时需要补第五个 Tab。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InboxTab {
+    /// `triaged_at IS NULL`
+    #[default]
+    Pending,
+    /// `triage_outcome = 'task'`
+    Task,
+    /// `triage_outcome = 'dismissed'`
+    Dismissed,
+    /// 无条件
+    All,
+}
+
+impl InboxTab {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Task => "task",
+            Self::Dismissed => "dismissed",
+            Self::All => "all",
+        }
+    }
+}
+
+impl FromStr for InboxTab {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "pending" => Ok(Self::Pending),
+            "task" => Ok(Self::Task),
+            "dismissed" => Ok(Self::Dismissed),
+            "all" => Ok(Self::All),
+            _ => Err(format!("unknown inbox tab: {value}")),
+        }
+    }
+}
+
+/// 列表与「选择全部 N 条」共用同一套条件，避免两处筛选漂移。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InboxScope {
+    pub tab: InboxTab,
     pub unread_only: bool,
     pub category: Option<String>,
     pub source_id: Option<String>,
+}
+
+/// 列表查询：状态轴、未读、类型、来源四个筛选与键集游标都下沉到 SQL。
+#[derive(Debug, Clone)]
+pub struct InboxPageQuery {
+    pub scope: InboxScope,
     pub cursor: Option<InboxMessageCursor>,
     pub limit: u32,
 }
@@ -195,12 +243,18 @@ pub struct InboxPage {
     pub has_more: bool,
 }
 
-/// 导航角标只取 `pending`；`unread` 用于「读完先放着」的筛选提示。
+/// 一次查询给出五个数：导航角标只取 `pending`，四个 Tab 各取自己的一项。
+///
+/// 计数随来源与分类筛选，不随 Tab 与未读筛选 —— 这样同一来源下四个 Tab 的数字
+/// 相加等于「全部」，切 Tab 不会出现对不上的数字。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InboxCounts {
     pub all: i64,
     pub pending: i64,
+    pub task: i64,
+    pub dismissed: i64,
+    /// 与「只看未读」筛选同一口径：`read_at IS NULL`，不再要求未处理。
     pub unread: i64,
 }
 

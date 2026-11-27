@@ -1,9 +1,10 @@
 use super::{Database, MANUAL_SOURCE_ID};
 use crate::domain::{
     CaptureKind, CapturePageQuery, CaptureSort, CaptureSummary, EmailTls, GithubRelease,
-    GithubThread, GithubThreadComment, InboxSourceKind, KeysetCursor, NewCapture, NewInboxMessage,
-    NewSyncRun, NewTask, ReadBackErrorKind, SyncRunStatus, TaskPageQuery, TaskStatus, ThreadKind,
-    ThreadQuery, ThreadRelationship, ThreadState, ThreadSummary, TriageOutcome,
+    GithubThread, GithubThreadComment, InboxPageQuery, InboxScope, InboxSourceKind, InboxTab,
+    KeysetCursor, NewCapture, NewInboxMessage, NewSyncRun, NewTask, ReadBackErrorKind,
+    SyncRunStatus, TaskPageQuery, TaskStatus, ThreadKind, ThreadQuery, ThreadRelationship,
+    ThreadState, ThreadSummary, TriageOutcome,
 };
 use crate::infrastructure::email::{EmailConfig, account_id};
 use uuid::Uuid;
@@ -79,7 +80,7 @@ fn migrations_are_idempotent_and_captures_support_crud() {
             )
         })
         .unwrap();
-    assert_eq!(migration_count, 8);
+    assert_eq!(migration_count, 9);
     let captures = db.captures();
     let created = captures
         .create(capture("First title", "first body"))
@@ -823,7 +824,7 @@ fn inbox_repository_dedupes_messages_and_converts_once() {
         .unwrap();
     assert_eq!(updated.id, created.id, "the same key updates in place");
     assert_eq!(updated.title, "被 @ 了（更新）");
-    assert_eq!(messages.counts().unwrap().all, 1);
+    assert_eq!(messages.counts(None, None).unwrap().all, 1);
 
     messages.set_read(&updated.id, true).unwrap();
     let unchanged = messages
@@ -889,7 +890,7 @@ fn inbox_repository_dedupes_messages_and_converts_once() {
     let dismissed = messages.dismiss(&dismissed.id).unwrap().unwrap();
     assert_eq!(dismissed.triage_outcome, Some(TriageOutcome::Dismissed));
 
-    let counts = messages.counts().unwrap();
+    let counts = messages.counts(None, None).unwrap();
     assert_eq!(
         (counts.all, counts.pending),
         (2, 0),
@@ -907,6 +908,136 @@ fn inbox_repository_dedupes_messages_and_converts_once() {
         refreshed.triage_outcome,
         Some(TriageOutcome::Dismissed),
         "re-ingest does not revive a dismissed message"
+    );
+}
+
+/// 状态轴：四个 Tab 各自对应一段 SQL，计数与 Tab 无关、只随来源与分类变化。
+#[test]
+fn inbox_scope_splits_the_tabs_and_counts_add_up() {
+    let db = Database::in_memory().unwrap();
+    let manual = db.inbox_sources().ensure_manual().unwrap();
+    let github = db.inbox_sources().ensure_github().unwrap();
+    let messages = db.inbox_messages();
+
+    let mention = messages
+        .ingest(inbox_message("axis-1", "提及", "2026-11-26T01:00:00.000Z"))
+        .unwrap();
+    let dismissed = messages
+        .ingest(inbox_message("axis-2", "忽略", "2026-11-26T02:00:00.000Z"))
+        .unwrap();
+    let converted = messages
+        .ingest(inbox_message(
+            "axis-3",
+            "转待办",
+            "2026-11-26T03:00:00.000Z",
+        ))
+        .unwrap();
+    let release = messages
+        .ingest(NewInboxMessage {
+            source_id: github.id.clone(),
+            category: "release".into(),
+            ..inbox_message("axis-4", "发布", "2026-11-26T04:00:00.000Z")
+        })
+        .unwrap();
+
+    messages.dismiss(&dismissed.id).unwrap();
+    messages
+        .to_task(
+            &converted.id,
+            NewTask {
+                title: converted.title.clone(),
+                note: None,
+                origin_kind: Some("inbox".into()),
+                origin_id: Some(converted.id.clone()),
+            },
+        )
+        .unwrap();
+    messages.set_read(&mention.id, true).unwrap();
+
+    let all = messages.counts(None, None).unwrap();
+    assert_eq!(
+        (all.all, all.pending, all.task, all.dismissed, all.unread),
+        (4, 2, 1, 1, 3),
+        "the three outcome buckets add up to all; unread covers processed rows"
+    );
+
+    let manual_only = messages.counts(Some(&manual.id), None).unwrap();
+    assert_eq!(
+        (
+            manual_only.all,
+            manual_only.pending,
+            manual_only.task,
+            manual_only.dismissed,
+            manual_only.unread
+        ),
+        (3, 1, 1, 1, 2),
+        "counts follow the source filter"
+    );
+
+    let mentions = messages.counts(None, Some("mention")).unwrap();
+    assert_eq!(
+        (
+            mentions.all,
+            mentions.pending,
+            mentions.task,
+            mentions.dismissed
+        ),
+        (3, 1, 1, 1),
+        "counts follow the category filter"
+    );
+
+    let page = |scope: InboxScope| {
+        messages
+            .page(&InboxPageQuery {
+                scope,
+                cursor: None,
+                limit: 50,
+            })
+            .unwrap()
+    };
+    let ids = |query: &crate::domain::InboxPage| {
+        query
+            .messages
+            .iter()
+            .map(|message| message.id.clone())
+            .collect::<Vec<_>>()
+    };
+
+    let pending = page(InboxScope::default());
+    assert_eq!(ids(&pending), vec![release.id.clone(), mention.id.clone()]);
+
+    let task = page(InboxScope {
+        tab: InboxTab::Task,
+        ..InboxScope::default()
+    });
+    assert_eq!(ids(&task), vec![converted.id.clone()]);
+
+    let only_dismissed = page(InboxScope {
+        tab: InboxTab::Dismissed,
+        ..InboxScope::default()
+    });
+    assert_eq!(ids(&only_dismissed), vec![dismissed.id.clone()]);
+
+    let unread = page(InboxScope {
+        tab: InboxTab::All,
+        unread_only: true,
+        source_id: Some(manual.id.clone()),
+        ..InboxScope::default()
+    });
+    assert_eq!(
+        ids(&unread),
+        vec![converted.id.clone(), dismissed.id.clone()],
+        "unread is orthogonal to the status axis"
+    );
+
+    let everything = page(InboxScope {
+        tab: InboxTab::All,
+        ..InboxScope::default()
+    });
+    assert_eq!(
+        everything.messages.len(),
+        4,
+        "the all tab applies no status condition"
     );
 }
 
@@ -956,7 +1087,7 @@ fn opening_a_v5_database_applies_the_task_and_inbox_migrations() {
     let database = Database::open(&database_path).unwrap();
     assert_eq!(
         database.migrated_to(),
-        Some(8),
+        Some(9),
         "opening a v5 database lands on the latest version"
     );
     assert_eq!(database.tasks().counts().unwrap().all, 0);

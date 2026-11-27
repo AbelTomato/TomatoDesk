@@ -3,8 +3,8 @@ use uuid::Uuid;
 
 use crate::{
     domain::{
-        InboxCounts, InboxMessage, InboxMessageCursor, InboxPage, InboxPageQuery, NewInboxMessage,
-        NewTask, Task,
+        InboxCounts, InboxMessage, InboxMessageCursor, InboxPage, InboxPageQuery, InboxScope,
+        InboxTab, NewInboxMessage, NewTask, Task,
     },
     infrastructure::db::{Database, DbError, DbResult},
 };
@@ -137,22 +137,7 @@ impl InboxMessageRepository {
         let mut sql = format!("SELECT {MESSAGE_FIELDS} FROM inbox_messages WHERE 1 = 1");
         let mut values: Vec<Value> = Vec::new();
 
-        match query.triaged {
-            Some(true) => sql.push_str(" AND triaged_at IS NOT NULL"),
-            Some(false) => sql.push_str(" AND triaged_at IS NULL"),
-            None => {}
-        }
-        if query.unread_only {
-            sql.push_str(" AND read_at IS NULL");
-        }
-        if let Some(category) = &query.category {
-            sql.push_str(" AND category = ?");
-            values.push(Value::Text(category.clone()));
-        }
-        if let Some(source_id) = &query.source_id {
-            sql.push_str(" AND source_id = ?");
-            values.push(Value::Text(source_id.clone()));
-        }
+        push_scope(&mut sql, &mut values, &query.scope);
         if let Some(cursor) = &query.cursor {
             sql.push_str(" AND (occurred_at < ? OR (occurred_at = ? AND id < ?))");
             values.push(Value::Text(cursor.value.clone()));
@@ -193,25 +178,32 @@ impl InboxMessageRepository {
         })
     }
 
-    /// 三个计数一次查完；导航角标只取 `pending`。
-    pub fn counts(&self) -> DbResult<InboxCounts> {
+    /// 五个计数一次查完；导航角标只取 `pending`。
+    ///
+    /// 只按来源与分类过滤，不按 Tab 与未读过滤：四个 Tab 的数字必须能相加等于「全部」。
+    pub fn counts(&self, source_id: Option<&str>, category: Option<&str>) -> DbResult<InboxCounts> {
+        let mut sql = String::from(
+            "SELECT COUNT(*),
+                    COALESCE(SUM(CASE WHEN triaged_at IS NULL THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN triage_outcome = 'task' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN triage_outcome = 'dismissed' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN read_at IS NULL THEN 1 ELSE 0 END), 0)
+             FROM inbox_messages WHERE 1 = 1",
+        );
+        let mut values: Vec<Value> = Vec::new();
+        push_source_filters(&mut sql, &mut values, source_id, category);
+
         self.database.with_connection(|connection| {
             connection
-                .query_row(
-                    "SELECT COUNT(*),
-                            COALESCE(SUM(CASE WHEN triaged_at IS NULL THEN 1 ELSE 0 END), 0),
-                            COALESCE(SUM(CASE WHEN read_at IS NULL AND triaged_at IS NULL
-                                              THEN 1 ELSE 0 END), 0)
-                     FROM inbox_messages",
-                    [],
-                    |row| {
-                        Ok(InboxCounts {
-                            all: row.get(0)?,
-                            pending: row.get(1)?,
-                            unread: row.get(2)?,
-                        })
-                    },
-                )
+                .query_row(&sql, params_from_iter(values.iter()), |row| {
+                    Ok(InboxCounts {
+                        all: row.get(0)?,
+                        pending: row.get(1)?,
+                        task: row.get(2)?,
+                        dismissed: row.get(3)?,
+                        unread: row.get(4)?,
+                    })
+                })
                 .map_err(Into::into)
         })
     }
@@ -274,6 +266,43 @@ impl InboxMessageRepository {
             insert_task(transaction, &task_id, task)?;
             get_task(transaction, &task_id)?.ok_or(DbError::NotFound("task"))
         })
+    }
+}
+
+/// 状态轴的四条判断对应四段 SQL；列表与后续的「选择全部」共用，
+/// 避免两处筛选条件各写一遍后慢慢漂移。
+fn push_scope(sql: &mut String, values: &mut Vec<Value>, scope: &InboxScope) {
+    match scope.tab {
+        InboxTab::Pending => sql.push_str(" AND triaged_at IS NULL"),
+        InboxTab::Task => sql.push_str(" AND triage_outcome = 'task'"),
+        InboxTab::Dismissed => sql.push_str(" AND triage_outcome = 'dismissed'"),
+        InboxTab::All => {}
+    }
+    if scope.unread_only {
+        sql.push_str(" AND read_at IS NULL");
+    }
+    push_source_filters(
+        sql,
+        values,
+        scope.source_id.as_deref(),
+        scope.category.as_deref(),
+    );
+}
+
+/// 来源与分类是「计数也跟随」的两个筛选，单独抽出来给 `counts` 复用。
+fn push_source_filters(
+    sql: &mut String,
+    values: &mut Vec<Value>,
+    source_id: Option<&str>,
+    category: Option<&str>,
+) {
+    if let Some(category) = category {
+        sql.push_str(" AND category = ?");
+        values.push(Value::Text(category.to_owned()));
+    }
+    if let Some(source_id) = source_id {
+        sql.push_str(" AND source_id = ?");
+        values.push(Value::Text(source_id.to_owned()));
     }
 }
 

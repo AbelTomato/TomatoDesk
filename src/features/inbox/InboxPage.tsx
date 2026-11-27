@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
@@ -12,7 +12,7 @@ import {
   Tabs,
 } from "../../components/ui";
 import {
-  countInboxPending,
+  countInboxMessages,
   convertInboxMessageToTask,
   dismissInboxMessage,
   getInboxReadBackStatus,
@@ -28,6 +28,7 @@ import {
   type InboxReadBackStatus,
   type InboxSource,
   type InboxSyncSummary,
+  type InboxTab,
 } from "../../lib/api";
 import { notifyInboxChanged, notifyTasksChanged } from "../../lib/events";
 import { formatRelative } from "../../lib/format";
@@ -36,28 +37,17 @@ import InboxMessageDetail from "./InboxMessageDetail";
 import {
   categoryOptions,
   describeCategory,
+  emptyHints,
+  inboxTabOrder,
   latestSyncedAt,
   sourceKindLabels,
+  tabLabels,
   triageLabels,
 } from "./shared";
 
-type TriagedFilter = "pending" | "triaged" | "all";
-
 const PAGE_SIZE = 50;
 
-const emptyCounts: InboxCounts = { all: 0, pending: 0, unread: 0 };
-
-const emptyHints: Record<TriagedFilter, { title: string; hint: string }> = {
-  pending: {
-    title: "都处理完了",
-    hint: "新消息会在下次同步后出现在这里。",
-  },
-  triaged: { title: "还没有处理过的消息", hint: "忽略或转为待办之后，消息会留在这里备查。" },
-  all: {
-    title: "收件箱是空的",
-    hint: "配置 GitHub Token 或邮箱账户后，消息会自动同步进来。",
-  },
-};
+const emptyCounts: InboxCounts = { all: 0, pending: 0, task: 0, dismissed: 0, unread: 0 };
 
 /** 开发窗口用来造消息的样例：点一次写一条，循环使用。 */
 const devSamples = [
@@ -98,7 +88,7 @@ function InboxPage({
   const [counts, setCounts] = useState<InboxCounts>(emptyCounts);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // 带消息 id 进来时先看「全部」，否则已处理的消息不在待处理列表里。
-  const [filter, setFilter] = useState<TriagedFilter>(initialMessageId ? "all" : "pending");
+  const [filter, setFilter] = useState<InboxTab>(initialMessageId ? "all" : "pending");
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [category, setCategory] = useState("all");
   const [sourceId, setSourceId] = useState<string | null>(null);
@@ -115,13 +105,22 @@ function InboxPage({
   const sampleIndex = useRef(0);
   const appliedInitial = useRef(false);
 
+  /**
+   * 计数只随来源与分类变化，不随 Tab 与未读变化：
+   * 这样同一来源下四个 Tab 的数字加起来等于「全部」。
+   */
+  const countFilter = useMemo(
+    () => ({ sourceId, category: category === "all" ? null : category }),
+    [category, sourceId],
+  );
+
   const refreshCounts = useCallback(async () => {
     try {
-      setCounts(await countInboxPending());
+      setCounts(await countInboxMessages(countFilter));
     } catch {
       // 角标失败不影响列表，保留上一次的数字。
     }
-  }, []);
+  }, [countFilter]);
 
   const load = useCallback(async () => {
     const currentRequest = ++requestId.current;
@@ -131,13 +130,13 @@ function InboxPage({
     try {
       const [page, nextCounts] = await Promise.all([
         listInboxMessagesPage({
-          triaged: filter === "all" ? null : filter === "pending" ? false : true,
+          tab: filter,
           unreadOnly,
           category: category === "all" ? null : category,
           sourceId,
           limit: PAGE_SIZE,
         }),
-        countInboxPending(),
+        countInboxMessages(countFilter),
       ]);
       if (currentRequest !== requestId.current) return;
       setMessages(page.messages);
@@ -153,7 +152,7 @@ function InboxPage({
     } finally {
       if (currentRequest === requestId.current) setLoading(false);
     }
-  }, [category, filter, sourceId, unreadOnly]);
+  }, [category, countFilter, filter, sourceId, unreadOnly]);
 
   useEffect(() => {
     void load();
@@ -223,7 +222,7 @@ function InboxPage({
     setLoadingMore(true);
     try {
       const page = await listInboxMessagesPage({
-        triaged: filter === "all" ? null : filter === "pending" ? false : true,
+        tab: filter,
         unreadOnly,
         category: category === "all" ? null : category,
         sourceId,
@@ -248,7 +247,8 @@ function InboxPage({
   const matchesFilters = useCallback(
     (message: InboxMessage) => {
       if (filter === "pending" && message.triagedAt) return false;
-      if (filter === "triaged" && !message.triagedAt) return false;
+      if (filter === "task" && message.triageOutcome !== "task") return false;
+      if (filter === "dismissed" && message.triageOutcome !== "dismissed") return false;
       if (unreadOnly && message.readAt) return false;
       if (category !== "all" && message.category !== category) return false;
       if (sourceId && message.sourceId !== sourceId) return false;
@@ -418,11 +418,18 @@ function InboxPage({
     }
   }
 
-  const tabs = [
-    { id: "pending", label: "待处理", count: counts.pending },
-    { id: "triaged", label: "已处理", count: counts.all - counts.pending },
-    { id: "all", label: "全部", count: counts.all },
-  ];
+  // 计数直接从各自条件算出，不再用 all - pending 凑数。
+  const tabCounts: Record<InboxTab, number> = {
+    pending: counts.pending,
+    task: counts.task,
+    dismissed: counts.dismissed,
+    all: counts.all,
+  };
+  const tabs = inboxTabOrder.map((tab) => ({
+    id: tab,
+    label: tabLabels[tab],
+    count: tabCounts[tab],
+  }));
 
   const empty = unreadOnly
     ? {
@@ -464,7 +471,7 @@ function InboxPage({
           <Tabs
             items={tabs}
             value={filter}
-            onChange={(id) => setFilter(id as TriagedFilter)}
+            onChange={(id) => setFilter(id as InboxTab)}
             trailing={
               <>
                 <button
@@ -631,7 +638,7 @@ function InboxPage({
                 <ListItemMeta>
                   <span>{describeCategory(message.category)}</span>
                   {message.actor ? <span>{message.actor}</span> : null}
-                  {message.triageOutcome ? (
+                  {message.triageOutcome && filter === "all" ? (
                     <Badge tone="neutral">{triageLabels[message.triageOutcome]}</Badge>
                   ) : null}
                   <time className="ml-auto" dateTime={message.occurredAt}>
