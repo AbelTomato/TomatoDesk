@@ -1,5 +1,10 @@
 use keyring::Entry;
 
+/// 凭据服务名随构建区分：开发进程读写的是自己的命名空间，
+/// 不会覆盖或删除生产 Token。
+#[cfg(debug_assertions)]
+const SERVICE: &str = "TomatoDesk Dev";
+#[cfg(not(debug_assertions))]
 const SERVICE: &str = "TomatoDesk";
 const GITHUB_TOKEN_USER: &str = "github-token";
 

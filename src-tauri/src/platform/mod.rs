@@ -5,21 +5,32 @@ use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
 };
-use tauri_plugin_global_shortcut::{GlobalShortcutExt, Modifiers, Shortcut};
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
 use tauri_plugin_notification::NotificationExt;
 
 const MAIN_WINDOW: &str = "main";
 const QUICK_CAPTURE_WINDOW: &str = "quick-capture";
 
 pub fn setup<R: Runtime>(app: &mut App<R>) -> Result<(), Box<dyn Error>> {
-    app.handle().global_shortcut().register(Shortcut::new(
-        Some(Modifiers::CONTROL | Modifiers::SHIFT),
-        tauri_plugin_global_shortcut::Code::Space,
-    ))?;
+    // 全局快捷键属于操作系统级命名空间，不随 identifier 隔离，被占用是常态：
+    // 注册失败只记一笔，托盘与界面照常可用，不能因此让整个应用启动失败。
+    if let Err(error) = app.handle().global_shortcut().register(capture_shortcut()) {
+        eprintln!("全局快捷键注册失败，托盘与界面仍可用：{error}");
+    }
 
     install_tray(app)?;
     hide_windows_on_close(app);
     Ok(())
+}
+
+/// 生产用 `Ctrl + Shift + Space`；debug 构建再加上 `Alt`，
+/// 这样同一个桌面既跑生产版又跑开发版时两个热键各自生效。
+fn capture_shortcut() -> Shortcut {
+    #[cfg(debug_assertions)]
+    let modifiers = Modifiers::CONTROL | Modifiers::ALT | Modifiers::SHIFT;
+    #[cfg(not(debug_assertions))]
+    let modifiers = Modifiers::CONTROL | Modifiers::SHIFT;
+    Shortcut::new(Some(modifiers), Code::Space)
 }
 
 pub fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
