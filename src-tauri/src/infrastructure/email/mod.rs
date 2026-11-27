@@ -1,7 +1,8 @@
 //! 邮箱连接器的领域无关部分：账户标识、非敏感配置、错误分类与原文解析。
 //!
-//! IMAP 会话放在后续的 `imap_client` 子模块里；这里只保留可以脱网测试的纯逻辑。
+//! `client` 负责 IMAP 会话与取信，`parse` 负责 MIME 解析；两者都不碰数据库。
 
+pub mod client;
 pub mod parse;
 
 use std::fmt;
