@@ -1,6 +1,6 @@
 # 收件箱邮件连接器（阶段五）接入方案
 
-- 状态：S0 完成（163 真实账号已跑通登录 + `ID` + `EXAMINE` + 取信），S1 完成（契约与存储层），S2 完成（解析层与 fixtures），S3 完成（IMAP 取信与多账户轮询），S4 完成（命令层与 DTO 校验），S5 待开始
+- 状态：S0 完成（163 真实账号已跑通登录 + `ID` + `EXAMINE` + 取信），S1 完成（契约与存储层），S2 完成（解析层与 fixtures），S3 完成（IMAP 取信与多账户轮询），S4 完成（命令层与 DTO 校验），S5 完成（前端账户管理与邮件详情），S6 待办（门禁与文档收尾）
 - 创建日期：2026-11-26
 - 最后更新：2026-11-27
 - 涉及模块：`inbox` / `inbox_sources` / `inbox_messages` / `secrets` / `settings` / `inbox-ui`
@@ -9,14 +9,14 @@
 
 ## 0. 评审结论（2026-11-26）
 
-| 议题 | 结论 |
-| --- | --- |
-| 账户数量 | **多账户**，上限 5；单账户是「上限 = 1」的配置特例，不写两套代码 |
-| 已读回写 | 不回写服务器 `\Seen`，本地已读只代表看过 |
-| 首次窗口 | 最近 14 天、单轮每账户 100 封 |
-| 同步范围 | 只取 `INBOX`，不订阅其他文件夹 |
+| 议题       | 结论                                                              |
+| ---------- | ----------------------------------------------------------------- |
+| 账户数量   | **多账户**，上限 5；单账户是「上限 = 1」的配置特例，不写两套代码  |
+| 已读回写   | 不回写服务器 `\Seen`，本地已读只代表看过                          |
+| 首次窗口   | 最近 14 天、单轮每账户 100 封                                     |
+| 同步范围   | 只取 `INBOX`，不订阅其他文件夹                                    |
 | 服务商范围 | 仅支持授权码 / 应用专用密码的 IMAP；不支持 Outlook / M365 与 NTLM |
-| 删除账户 | 软停用：删凭据、清配置、留消息 |
+| 删除账户   | 软停用：删凭据、清配置、留消息                                    |
 
 ## 1. 目标与结论摘要
 
@@ -35,19 +35,19 @@
 
 阶段一至四已经把收件箱做成「来源 + 消息 + 判断」的通用骨架，邮件要接的地方比想象中少。逐项核对如下。
 
-| 能力 | 现状 | 邮件能否复用 | 需要补什么 |
-| --- | --- | --- | --- |
-| 消息源注册 | `inbox_sources(kind, name, config_json, cursor, enabled, last_error)`，一源一行 | 复用，且天然多账户 | 仓储补 `upsert_email`、`config`、`save_config`、`set_enabled`、`clear_cursor`、`list_email` |
-| 入库去重 | `INSERT ... ON CONFLICT(source_id, external_id)` | 完全复用 | 无（只要求 `external_id` 稳定） |
-| 已读 / 忽略 / 转待办 | `application::inbox` + 事务 | 完全复用 | 无 |
-| 分页 / 筛选 / 计数 | `InboxMessageRepository` | 完全复用 | 无 |
-| 同步事件 | `inbox-sync-updated`（载荷 `Option<InboxSyncSummary>`，含 `sourceId`） | 复用 | 每个账户同步完各发一次 |
-| 凭据存储 | `infrastructure/secrets`，键名 `github-token` | 复用机制 | 加 `email-password:<source_id>`，一账户一键 |
-| 已读回写队列 | `inbox_read_back`，worker 只调 GitHub API | 不复用 | 本阶段明确不做；`kind` 过滤已挡住 |
-| 待办来源展示 | `origin_source_kind` 子查询 + `describeOrigin()` | 完全复用 | 已支持「来自邮件」 |
-| 收件箱来源栏 | 遍历 `list_inbox_sources`，可筛选任意来源 | 完全复用，多账户自动出现 | 无 |
-| 收件箱详情 | 「相关」区写死 GitHub 文案 | 需条件化 | 按来源类型分支 |
-| 设置页 | GitHub Token / 已读回写 / 仓库 / 导出 | 复用版式 | 新增「邮箱账户」列表与表单 |
+| 能力                 | 现状                                                                            | 邮件能否复用             | 需要补什么                                                                                  |
+| -------------------- | ------------------------------------------------------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------- |
+| 消息源注册           | `inbox_sources(kind, name, config_json, cursor, enabled, last_error)`，一源一行 | 复用，且天然多账户       | 仓储补 `upsert_email`、`config`、`save_config`、`set_enabled`、`clear_cursor`、`list_email` |
+| 入库去重             | `INSERT ... ON CONFLICT(source_id, external_id)`                                | 完全复用                 | 无（只要求 `external_id` 稳定）                                                             |
+| 已读 / 忽略 / 转待办 | `application::inbox` + 事务                                                     | 完全复用                 | 无                                                                                          |
+| 分页 / 筛选 / 计数   | `InboxMessageRepository`                                                        | 完全复用                 | 无                                                                                          |
+| 同步事件             | `inbox-sync-updated`（载荷 `Option<InboxSyncSummary>`，含 `sourceId`）          | 复用                     | 每个账户同步完各发一次                                                                      |
+| 凭据存储             | `infrastructure/secrets`，键名 `github-token`                                   | 复用机制                 | 加 `email-password:<source_id>`，一账户一键                                                 |
+| 已读回写队列         | `inbox_read_back`，worker 只调 GitHub API                                       | 不复用                   | 本阶段明确不做；`kind` 过滤已挡住                                                           |
+| 待办来源展示         | `origin_source_kind` 子查询 + `describeOrigin()`                                | 完全复用                 | 已支持「来自邮件」                                                                          |
+| 收件箱来源栏         | 遍历 `list_inbox_sources`，可筛选任意来源                                       | 完全复用，多账户自动出现 | 无                                                                                          |
+| 收件箱详情           | 「相关」区写死 GitHub 文案                                                      | 需条件化                 | 按来源类型分支                                                                              |
+| 设置页               | GitHub Token / 已读回写 / 仓库 / 导出                                           | 复用版式                 | 新增「邮箱账户」列表与表单                                                                  |
 
 三个容易踩的既有约束，先记下来：
 
@@ -59,11 +59,11 @@
 
 ### 3.1 三种接入方式的选择
 
-| 方案 | 做法 | 评价 |
-| --- | --- | --- |
-| A. 独立 `email` 领域模块 | 自己的表、自己的判断流程 | 否决：判断、去重、待办转换会全部重写一遍，回到拆分前的老路 |
-| B. `inbox` 下的 provider | 邮件只负责「拉取 + 映射 + 入库」 | **采用**：与 GitHub 完全同构，判断逻辑零改动 |
-| C. 外部进程 / sidecar | 单独的可执行文件走 IPC | 否决：打包、签名、崩溃恢复成本远超收益 |
+| 方案                     | 做法                             | 评价                                                       |
+| ------------------------ | -------------------------------- | ---------------------------------------------------------- |
+| A. 独立 `email` 领域模块 | 自己的表、自己的判断流程         | 否决：判断、去重、待办转换会全部重写一遍，回到拆分前的老路 |
+| B. `inbox` 下的 provider | 邮件只负责「拉取 + 映射 + 入库」 | **采用**：与 GitHub 完全同构，判断逻辑零改动               |
+| C. 外部进程 / sidecar    | 单独的可执行文件走 IPC           | 否决：打包、签名、崩溃恢复成本远超收益                     |
 
 阶段五的定位就是 B：**连接器是收件箱的一个数据来源，不是第四个领域。**
 
@@ -114,16 +114,16 @@
 
 逐层看增量，结论是**多账户的边际成本很低，后补的成本很高**。
 
-| 层 | 单账户做法 | 多账户增量 | 复杂度 |
-| --- | --- | --- | --- |
-| 数据库 | 固定 `source-email` | 一行一账户，无 schema 变更 | 无 |
-| 账户标识 | 常量 id | UUID v5 派生 + 上限校验 | 低（约 20 行） |
-| 凭据 | 固定 keyring 键 | 键名带 source id，多读一次循环 | 低 |
-| 轮询 | 一个账户的循环 | 遍历启用账户、串行、每账户独立退避 | 中（约 80 行） |
-| 命令与 DTO | 单对象 | `list` + `id` 入参，多一层列表 | 低 |
-| 设置页 | 单表单 | 列表 + 新增/编辑/删除三个状态 | 中（约 120 行） |
-| 收件箱页 | — | **零改动**，来源栏本来就遍历来源 | 无 |
-| 测试 | 单账户用例 | 账户隔离、单账户失败不影响其他账户 | 低 |
+| 层         | 单账户做法          | 多账户增量                         | 复杂度          |
+| ---------- | ------------------- | ---------------------------------- | --------------- |
+| 数据库     | 固定 `source-email` | 一行一账户，无 schema 变更         | 无              |
+| 账户标识   | 常量 id             | UUID v5 派生 + 上限校验            | 低（约 20 行）  |
+| 凭据       | 固定 keyring 键     | 键名带 source id，多读一次循环     | 低              |
+| 轮询       | 一个账户的循环      | 遍历启用账户、串行、每账户独立退避 | 中（约 80 行）  |
+| 命令与 DTO | 单对象              | `list` + `id` 入参，多一层列表     | 低              |
+| 设置页     | 单表单              | 列表 + 新增/编辑/删除三个状态      | 中（约 120 行） |
+| 收件箱页   | —                   | **零改动**，来源栏本来就遍历来源   | 无              |
+| 测试       | 单账户用例          | 账户隔离、单账户失败不影响其他账户 | 低              |
 
 判断：
 
@@ -137,15 +137,15 @@
 
 按「通用路径能否覆盖」分三档，而不是按域名写 if。
 
-| 服务商 | 服务器（默认） | 认证 | 需要注意 | 支持级别 |
-| --- | --- | --- | --- | --- |
-| QQ 邮箱 | `imap.qq.com:993` | 授权码 + `LOGIN` | 连接数有限，多账户必须串行；不需要 `ID` | 完整支持 |
-| 163 / 126 | `imap.163.com:993` | 授权码 + `LOGIN` | **必须发 `ID` 命令**，否则 `SELECT` 报 `Unsafe Login` | 完整支持（能力探测） |
-| Gmail | `imap.gmail.com:993` | 应用专用密码（需先开两步验证） | 连接数限制；标签文件夹是 `[Gmail]/...`，只取 `INBOX` 可绕开 | 完整支持 |
-| iCloud | `imap.mail.me.com:993` | App 专用密码 | 无 | 完整支持 |
-| 自建 Dovecot / Postfix | 自定义 | `LOGIN` / `AUTHENTICATE PLAIN` | 自签证书会握手失败；部分只开 143 + STARTTLS | 有条件支持（需有效证书） |
-| 企业 Exchange（本地） | 自定义 | 常见只开 NTLM | 本方案不实现 NTLM | 不支持 |
-| Outlook / Microsoft 365 | — | OAuth2 / XOAUTH2 | 基本认证已关闭 | 不支持 |
+| 服务商                  | 服务器（默认）         | 认证                           | 需要注意                                                    | 支持级别                 |
+| ----------------------- | ---------------------- | ------------------------------ | ----------------------------------------------------------- | ------------------------ |
+| QQ 邮箱                 | `imap.qq.com:993`      | 授权码 + `LOGIN`               | 连接数有限，多账户必须串行；不需要 `ID`                     | 完整支持                 |
+| 163 / 126               | `imap.163.com:993`     | 授权码 + `LOGIN`               | **必须发 `ID` 命令**，否则 `SELECT` 报 `Unsafe Login`       | 完整支持（能力探测）     |
+| Gmail                   | `imap.gmail.com:993`   | 应用专用密码（需先开两步验证） | 连接数限制；标签文件夹是 `[Gmail]/...`，只取 `INBOX` 可绕开 | 完整支持                 |
+| iCloud                  | `imap.mail.me.com:993` | App 专用密码                   | 无                                                          | 完整支持                 |
+| 自建 Dovecot / Postfix  | 自定义                 | `LOGIN` / `AUTHENTICATE PLAIN` | 自签证书会握手失败；部分只开 143 + STARTTLS                 | 有条件支持（需有效证书） |
+| 企业 Exchange（本地）   | 自定义                 | 常见只开 NTLM                  | 本方案不实现 NTLM                                           | 不支持                   |
+| Outlook / Microsoft 365 | —                      | OAuth2 / XOAUTH2               | 基本认证已关闭                                              | 不支持                   |
 
 三档划分：
 
@@ -215,12 +215,12 @@
 
 ### 5.1 新增 IPC 命令（4 个，不含同步命令）
 
-| 命令 | 入参 | 出参 | 说明 |
-| --- | --- | --- | --- |
-| `list_email_accounts` | 无 | `Vec<EmailAccountStatus>` | 设置页与来源初始化；密码永不返回；空数组表示未配置 |
-| `test_email_account` | `EmailAccountInput` | `EmailAccountProbe` | 只连接验证，不落库 |
-| `save_email_account` | `EmailAccountInput` | `EmailAccountStatus` | 派生 id、校验上限、试连、落配置、写凭据、触发首轮同步 |
-| `delete_email_account` | `{ id }` | `Vec<EmailAccountStatus>` | 删凭据、`enabled=0`、清配置与游标，**不删消息** |
+| 命令                   | 入参                | 出参                      | 说明                                                  |
+| ---------------------- | ------------------- | ------------------------- | ----------------------------------------------------- |
+| `list_email_accounts`  | 无                  | `Vec<EmailAccountStatus>` | 设置页与来源初始化；密码永不返回；空数组表示未配置    |
+| `test_email_account`   | `EmailAccountInput` | `EmailAccountProbe`       | 只连接验证，不落库                                    |
+| `save_email_account`   | `EmailAccountInput` | `EmailAccountStatus`      | 派生 id、校验上限、试连、落配置、写凭据、触发首轮同步 |
+| `delete_email_account` | `{ id }`            | `Vec<EmailAccountStatus>` | 删凭据、`enabled=0`、清配置与游标，**不删消息**       |
 
 不提供 `sync_inbox_email`：与 GitHub 一致，拉取只由后台负责，界面不放同步按钮。
 
@@ -275,14 +275,14 @@ export interface EmailAccountInput {
 
 入参沿用 `dto.rs` 的 `deny_unknown_fields` + `required_text` / `optional_text` 约定，上限：
 
-| 字段 | 规则 |
-| --- | --- |
-| `address` | 必填，≤320，必须含 `@`，不含空白与换行 |
+| 字段       | 规则                                                                                                                 |
+| ---------- | -------------------------------------------------------------------------------------------------------------------- |
+| `address`  | 必填，≤320，必须含 `@`，不含空白与换行                                                                               |
 | `password` | 选填；新增账户、换授权码或首次测试连接时必填，≤512，只去首尾空白（授权码内部可能有空格）；留空则读该账户已保存的凭据 |
-| `host` | 必填，≤253，只允许主机名，不接受 `imap://`、`host:port` |
-| `port` | 1..=65535，默认 993 / 143 |
-| `tls` | 枚举，默认 `implicit` |
-| `mailbox` | 选填，默认 `INBOX`，≤128，拒绝控制字符 |
+| `host`     | 必填，≤253，只允许主机名，不接受 `imap://`、`host:port`                                                              |
+| `port`     | 1..=65535，默认 993 / 143                                                                                            |
+| `tls`      | 枚举，默认 `implicit`                                                                                                |
+| `mailbox`  | 选填，默认 `INBOX`，≤128，拒绝控制字符                                                                               |
 
 ### 5.3 配置与凭据契约
 
@@ -302,9 +302,9 @@ export interface EmailAccountInput {
 
 Windows 凭据管理器（service = `TomatoDesk`）：
 
-| 键 | 值 |
-| --- | --- |
-| `github-token` | 现有 GitHub Token（保持不变） |
+| 键                                   | 值                            |
+| ------------------------------------ | ----------------------------- |
+| `github-token`                       | 现有 GitHub Token（保持不变） |
 | `email-password:source-email-<uuid>` | 该账户的授权码 / 应用专用密码 |
 
 `secrets` 模块把「用户名 = 常量」改成 `fn entry(user: &str)`，GitHub 三个函数保持签名不变，新增 `save_email_password(source_id, password)` / `get_email_password(source_id)` / `delete_email_password(source_id)`。
@@ -326,19 +326,19 @@ Windows 凭据管理器（service = `TomatoDesk`）：
 
 ### 5.5 消息字段映射
 
-| `InboxMessage` 字段 | 邮件来源 | 规则 |
-| --- | --- | --- |
-| `external_id` | `Message-ID` | 去掉首尾空白与 `<>`；为空或 >512 → `uid:<uidValidity>:<uid>` |
-| `category` | 固定 | `mail` |
-| `title` | `Subject` | RFC 2047 解码；空 → `(无主题)`；≤512 |
-| `summary` | 正文预览 | 纯文本前 200 字，压缩连续空行；正文为空 → `NULL` |
-| `body` | 正文 | 优先 `text/plain`；只有 HTML 时转纯文本；≤65536 字符 |
-| `url` | 无 | 恒为 `NULL`（不造 `mailto:`，避免误开客户端） |
-| `actor` | `From` | `显示名 <地址>`，无显示名时只留地址；清换行与控制字符；≤256 |
-| `occurred_at` | `Date` → `INTERNALDATE` → 当前时间 | 转 UTC、RFC3339 毫秒；未来 >24h 或早于 1970 用当前时间 |
-| `external_updated_at` | 同 `occurred_at` | 每封信固定，重新同步不会把已读改回未读 |
-| `related_kind` / `related_id` | 无 | `NULL`；会话聚合留到后续 |
-| `payload_json` | 轻量元数据 | `uid / uidValidity / messageId / from / to / cc / size / attachments`，**不存原始 MIME** |
+| `InboxMessage` 字段           | 邮件来源                           | 规则                                                                                     |
+| ----------------------------- | ---------------------------------- | ---------------------------------------------------------------------------------------- |
+| `external_id`                 | `Message-ID`                       | 去掉首尾空白与 `<>`；为空或 >512 → `uid:<uidValidity>:<uid>`                             |
+| `category`                    | 固定                               | `mail`                                                                                   |
+| `title`                       | `Subject`                          | RFC 2047 解码；空 → `(无主题)`；≤512                                                     |
+| `summary`                     | 正文预览                           | 纯文本前 200 字，压缩连续空行；正文为空 → `NULL`                                         |
+| `body`                        | 正文                               | 优先 `text/plain`；只有 HTML 时转纯文本；≤65536 字符                                     |
+| `url`                         | 无                                 | 恒为 `NULL`（不造 `mailto:`，避免误开客户端）                                            |
+| `actor`                       | `From`                             | `显示名 <地址>`，无显示名时只留地址；清换行与控制字符；≤256                              |
+| `occurred_at`                 | `Date` → `INTERNALDATE` → 当前时间 | 转 UTC、RFC3339 毫秒；未来 >24h 或早于 1970 用当前时间                                   |
+| `external_updated_at`         | 同 `occurred_at`                   | 每封信固定，重新同步不会把已读改回未读                                                   |
+| `related_kind` / `related_id` | 无                                 | `NULL`；会话聚合留到后续                                                                 |
+| `payload_json`                | 轻量元数据                         | `uid / uidValidity / messageId / from / to / cc / size / attachments`，**不存原始 MIME** |
 
 ### 5.6 事件契约
 
@@ -346,10 +346,10 @@ Windows 凭据管理器（service = `TomatoDesk`）：
 
 ```ts
 interface InboxSyncSummary {
-  sourceId: string;      // "source-email-<uuid>"
-  fetchedCount: number;  // 本轮取到的封数
+  sourceId: string; // "source-email-<uuid>"
+  fetchedCount: number; // 本轮取到的封数
   ingestedCount: number; // 实际写入/更新的封数
-  pendingCount: number;  // 全局待判断数
+  pendingCount: number; // 全局待判断数
   syncedAt: string;
 }
 ```
@@ -366,13 +366,13 @@ interface InboxSyncSummary {
 
 ### 6.1 连接与认证
 
-| 场景 | 判定 | 处理 | 用户可见 |
-| --- | --- | --- | --- |
-| DNS / 连接超时 / TLS 握手失败 | `Unreachable` | 下一轮重试，不动游标 | 「无法连接 imap.qq.com:993：连接超时」 |
-| 登录被拒（`AUTHENTICATIONFAILED`、`LOGIN failed`） | `Auth` | 该账户内存退避 60 分钟再试，不清配置 | 「登录失败，请确认已开启 IMAP 并使用授权码」 |
-| 服务器不支持 IMAP / 端口写错 | `Unreachable` + 提示 | 同上 | 「服务器没有响应 IMAP 握手，确认端口与加密方式」 |
-| 文件夹不存在 | `Mailbox` | 该账户退避 60 分钟 | 「找不到文件夹 INBOX」 |
-| 服务器 5xx / 协议异常 | `Protocol` | 下一轮重试 | 原文摘要 |
+| 场景                                               | 判定                 | 处理                                 | 用户可见                                         |
+| -------------------------------------------------- | -------------------- | ------------------------------------ | ------------------------------------------------ |
+| DNS / 连接超时 / TLS 握手失败                      | `Unreachable`        | 下一轮重试，不动游标                 | 「无法连接 imap.qq.com:993：连接超时」           |
+| 登录被拒（`AUTHENTICATIONFAILED`、`LOGIN failed`） | `Auth`               | 该账户内存退避 60 分钟再试，不清配置 | 「登录失败，请确认已开启 IMAP 并使用授权码」     |
+| 服务器不支持 IMAP / 端口写错                       | `Unreachable` + 提示 | 同上                                 | 「服务器没有响应 IMAP 握手，确认端口与加密方式」 |
+| 文件夹不存在                                       | `Mailbox`            | 该账户退避 60 分钟                   | 「找不到文件夹 INBOX」                           |
+| 服务器 5xx / 协议异常                              | `Protocol`           | 下一轮重试                           | 原文摘要                                         |
 
 退避只在进程内按 source id 记录连续失败次数，不落库：重启后重试一次是合理的，也避免为它加字段。一个账户退避不影响其他账户。
 
@@ -413,17 +413,17 @@ interface InboxSyncSummary {
 
 ### 6.6 生命周期
 
-| 场景 | 处理 |
-| --- | --- |
-| 新增账户 | 派生 id，校验上限 5，试连成功后写配置与凭据；立即同步一次 |
-| 删除账户 | 删凭据 → `enabled = 0` → 清 `config_json` 与 `cursor` → 保留消息（不删 source 行，避免 CASCADE 清空） |
-| 重新添加同一账户 | 复用同一 id 与来源行，`enabled=1`、游标为空 → 按 14 天窗口重扫；老消息靠 Message-ID 去重，不会重复 |
-| 修改服务器 / 地址 | 视为新账户；设置页编辑时锁住这两个字段，要求先删除旧账户 |
-| 停用 / 未配置 | 轮询整轮跳过该账户，不请求、不发事件、不改 `last_error` |
-| 某账户断网 | 只记该账户 `last_error`，游标不动，恢复后从原位置继续；其他账户不受影响 |
-| 长期未启动 | 首次窗口之外新增的邮件按 UID 逐轮追赶，单账户 100 封封顶 |
-| 服务器已删除的邮件 | 本地保留（收件箱是事件记录，不做镜像删除） |
-| 密码失效 / 改密 | `Auth` 错误 + 提示重新保存授权码；旧凭据保留，保存新值即覆盖 |
+| 场景               | 处理                                                                                                  |
+| ------------------ | ----------------------------------------------------------------------------------------------------- |
+| 新增账户           | 派生 id，校验上限 5，试连成功后写配置与凭据；立即同步一次                                             |
+| 删除账户           | 删凭据 → `enabled = 0` → 清 `config_json` 与 `cursor` → 保留消息（不删 source 行，避免 CASCADE 清空） |
+| 重新添加同一账户   | 复用同一 id 与来源行，`enabled=1`、游标为空 → 按 14 天窗口重扫；老消息靠 Message-ID 去重，不会重复    |
+| 修改服务器 / 地址  | 视为新账户；设置页编辑时锁住这两个字段，要求先删除旧账户                                              |
+| 停用 / 未配置      | 轮询整轮跳过该账户，不请求、不发事件、不改 `last_error`                                               |
+| 某账户断网         | 只记该账户 `last_error`，游标不动，恢复后从原位置继续；其他账户不受影响                               |
+| 长期未启动         | 首次窗口之外新增的邮件按 UID 逐轮追赶，单账户 100 封封顶                                              |
+| 服务器已删除的邮件 | 本地保留（收件箱是事件记录，不做镜像删除）                                                            |
+| 密码失效 / 改密    | `Auth` 错误 + 提示重新保存授权码；旧凭据保留，保存新值即覆盖                                          |
 
 ## 7. 可执行接入方案
 
@@ -590,6 +590,23 @@ TcpStream::connect_timeout(8s)
 
 验收：`?preview&view=settings` 与 `?preview&view=inbox` 在 1440×900、820×900 下布局正常；两个邮箱账户在来源栏可分别筛选；邮件详情的按钮集合与 GitHub 通知不同且没有死链。
 
+**已落地（2026-11-27）**
+
+- `src/lib/api.ts`：新增 `EmailTls` / `EmailAccountStatus` / `EmailAccountInput` / `EmailAccountProbe` 与 `listEmailAccounts`、`testEmailAccount`、`saveEmailAccount`、`deleteEmailAccount` 四个调用，全部带 preview 桩。
+- `src/features/settings/emailAccounts.ts`（新增）：`MAX_EMAIL_ACCOUNTS`、`defaultPort`、`suggestServer`（qq / 163 / gmail / icloud 四个预填，认不出域名返回 `null`）、`canAddAccount`（只数启用账户）、`describeServer`。全是纯函数，主页面只组合。
+- `SettingsPage.tsx`：Token 与「已读回写」之间新增「邮箱账户」区块。
+  - 有账户时列表展示地址、`host:port`、加密方式、文件夹、最近同步与 `last_error`；每行「编辑」（地址与服务器锁住，只改端口 / 加密 / 文件夹）与「删除」；删除是行内二次确认并提示「历史邮件会保留在收件箱」，不用 `window.confirm`（WebView 下的体验与可测性都差）。
+  - 底部「添加账户」在满 5 个时禁用并写明上限；无账户时直接展开新增表单。
+  - 表单六项：地址、授权码、服务器、端口、加密方式、文件夹。新增时授权码必填，编辑时留空表示沿用已保存凭据；「测试连接」成功后回显封数与 UIDVALIDITY，不落库。
+  - 域名预填只在「新增且主机没被手改过」时触发；切换加密方式时，端口若还是上一个模式的默认值就跟着 993 / 143 走，手填过的不动。
+  - 保存 / 删除成功后重载账户列表，并监听 `inbox-sync-updated`，首轮同步完成后「最近同步」自动刷新。
+- `InboxPage.tsx`：头部「自动同步」改取**所有启用来源里最新的 `lastSyncedAt`**（原来只看 GitHub）；来源栏补一句邮箱同步说明；失败提示改为遍历所有启用来源，多账户时每个账户各自一条；空状态去掉「邮件连接器随后提供」。
+- `InboxMessageDetail.tsx`：「相关」区按来源分支。邮件只写「邮件原文已保存在收件箱，回复请到邮箱客户端」，不出现任何 GitHub 按钮；正文为空时文案改为「这封邮件没有可读正文。」
+- `fixtures.ts`：两个邮箱来源（`abeltomato@qq.com` / `abeltomato@163.com`，后者带一条 `lastError` 用于走查错误态）、两封邮件消息（两封分别属于两个账户，便于验证按来源筛选），以及可变的 `emailAccounts` 与试连 / 保存 / 删除桩。`?preview` 下新增账户会同时出现在来源栏。
+- 一处与原文的差异：邮箱来源的 `name` 就是地址，13rem 栏宽下会被截断成 `abeltomato@163…`。改成等宽小号显示，并省掉右侧「邮箱」标签（地址本身已经说明类型），完整域名才能显示；其余来源仍保留类型标签。
+- 测试：`emailAccounts.test.ts` 7 个（预填、大小写与空白、端口默认值、上限含停用账户、服务器展示），`shared.test.ts` 5 个（最新同步时间跳过停用与坏值、邮件分支判定）；`pnpm test` 18 个通过。
+- 手工走查（`?preview`，1440×900 与 820×900）：设置页的账户列表与两列表单排版正常，窄屏按外壳规则堆叠；来源栏两个邮箱可分别筛选且地址完整；邮件详情没有 GitHub 死链。
+
 ### S6 门禁与文档
 
 1. 跑完整门禁（见 9.4）。
@@ -598,31 +615,34 @@ TcpStream::connect_timeout(8s)
 
 ## 8. 涉及文件与模块
 
-| 文件 | 变化 |
-| --- | --- |
-| `src-tauri/Cargo.toml` | 新增 `imap`、`mail-parser`；`uuid` 补 `v5`；tokio 补 `rt` |
-| `src-tauri/src/infrastructure/email/mod.rs` | 新增：账户配置、确定性 id、错误类型 |
-| `src-tauri/src/infrastructure/email/client.rs` | 新增：IMAP 会话、能力探测、探测与增量取信 |
-| `src-tauri/src/infrastructure/email/parse.rs` | 新增：MIME 解析、编码、HTML→纯文本 |
-| `src-tauri/src/infrastructure/mod.rs` | 导出 `email` |
-| `src-tauri/src/infrastructure/secrets/mod.rs` | 抽出 `entry(user)`，加邮箱凭据三函数 |
-| `src-tauri/src/application/inbox/email.rs` | 新增：测试连接替换点 `MailProber`、多账户同步、映射、轮询、退避、游标、单账户立即同步 |
-| `src-tauri/src/application/inbox/mod.rs` | 声明 `email` |
-| `src-tauri/src/domain/inbox.rs` | 新增 `EmailTls` / `EmailAccountStatus` / `EmailAccountProbe` |
-| `src-tauri/src/infrastructure/db/repositories/inbox_source.rs` | 加 `upsert_email`、`list_email`、配置读写、清配置、启停、清游标、计数 |
-| `src-tauri/src/commands/email.rs` | 新增四个命令 |
-| `src-tauri/src/commands/dto.rs` | `EmailAccountInput` 与校验 |
-| `src-tauri/src/commands/mod.rs` | 导出 `email` |
-| `src-tauri/src/commands/error.rs` | `EmailError` 映射 |
-| `src-tauri/src/lib.rs` | 注册 4 个命令，`setup` 启动邮件轮询 |
-| `src/lib/api.ts` | 邮件账户类型与 4 个调用（含 preview 桩） |
-| `src/features/settings/SettingsPage.tsx` | 「邮箱账户」区块（列表 + 表单 + 测试 + 删除） |
-| `src/features/inbox/InboxPage.tsx` | 同步时间、来源提示、空状态文案 |
-| `src/features/inbox/InboxMessageDetail.tsx` | 「相关」区按来源分支 |
-| `src/features/dev/fixtures.ts` | 两个邮箱来源与邮件消息 |
-| `src-tauri/tests/email_probe.rs` | 新增：手工联调探针（默认 ignore）与编码用例 |
-| `src-tauri/tests/fixtures/email/*.eml` | 新增解析用例样本 |
-| `docs/releases/v0.5.0.md` | 发布说明（随版本） |
+| 文件                                                           | 变化                                                                                  |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `src-tauri/Cargo.toml`                                         | 新增 `imap`、`mail-parser`；`uuid` 补 `v5`；tokio 补 `rt`                             |
+| `src-tauri/src/infrastructure/email/mod.rs`                    | 新增：账户配置、确定性 id、错误类型                                                   |
+| `src-tauri/src/infrastructure/email/client.rs`                 | 新增：IMAP 会话、能力探测、探测与增量取信                                             |
+| `src-tauri/src/infrastructure/email/parse.rs`                  | 新增：MIME 解析、编码、HTML→纯文本                                                    |
+| `src-tauri/src/infrastructure/mod.rs`                          | 导出 `email`                                                                          |
+| `src-tauri/src/infrastructure/secrets/mod.rs`                  | 抽出 `entry(user)`，加邮箱凭据三函数                                                  |
+| `src-tauri/src/application/inbox/email.rs`                     | 新增：测试连接替换点 `MailProber`、多账户同步、映射、轮询、退避、游标、单账户立即同步 |
+| `src-tauri/src/application/inbox/mod.rs`                       | 声明 `email`                                                                          |
+| `src-tauri/src/domain/inbox.rs`                                | 新增 `EmailTls` / `EmailAccountStatus` / `EmailAccountProbe`                          |
+| `src-tauri/src/infrastructure/db/repositories/inbox_source.rs` | 加 `upsert_email`、`list_email`、配置读写、清配置、启停、清游标、计数                 |
+| `src-tauri/src/commands/email.rs`                              | 新增四个命令                                                                          |
+| `src-tauri/src/commands/dto.rs`                                | `EmailAccountInput` 与校验                                                            |
+| `src-tauri/src/commands/mod.rs`                                | 导出 `email`                                                                          |
+| `src-tauri/src/commands/error.rs`                              | `EmailError` 映射                                                                     |
+| `src-tauri/src/lib.rs`                                         | 注册 4 个命令，`setup` 启动邮件轮询                                                   |
+| `src/lib/api.ts`                                               | 邮件账户类型与 4 个调用（含 preview 桩）                                              |
+| `src/features/settings/SettingsPage.tsx`                       | 「邮箱账户」区块（列表 + 表单 + 测试 + 删除）                                         |
+| `src/features/settings/emailAccounts.ts`                       | 新增：服务商预填、端口默认、上限判断等纯函数                                          |
+| `src/features/settings/emailAccounts.test.ts`                  | 新增：预填、端口、上限与服务器展示用例                                                |
+| `src/features/inbox/shared.test.ts`                            | 新增：最新同步时间与邮件分支判定用例                                                  |
+| `src/features/inbox/InboxPage.tsx`                             | 同步时间、来源提示、空状态文案                                                        |
+| `src/features/inbox/InboxMessageDetail.tsx`                    | 「相关」区按来源分支                                                                  |
+| `src/features/dev/fixtures.ts`                                 | 两个邮箱来源与邮件消息                                                                |
+| `src-tauri/tests/email_probe.rs`                               | 新增：手工联调探针（默认 ignore）与编码用例                                           |
+| `src-tauri/tests/fixtures/email/*.eml`                         | 新增解析用例样本                                                                      |
+| `docs/releases/v0.5.0.md`                                      | 发布说明（随版本）                                                                    |
 
 不需要改动：`0007_inbox_module.sql`、`inbox_message.rs` 的 upsert、`inbox_read_back`、判断动作、收件箱来源栏。
 
@@ -693,23 +713,23 @@ pnpm lint && pnpm test && pnpm build && pnpm check:design && pnpm format:check
 
 ## 10. 风险与回滚
 
-| 风险 | 影响 | 对策 |
-| --- | --- | --- |
-| 用 `BODY[]` 取信把服务器邮件标已读 | 用户的邮箱被「替读」 | 只读 `EXAMINE` + `BODY.PEEK[]`；手工验证第 7 条 |
-| 163 缺 `ID` 命令 | 无法选箱，功能不可用 | 登录后检测 `CAPABILITY` 发 `ID`；单独手工验证 |
-| GBK / 非 UTF-8 邮件乱码 | 内容不可读 | `full_encoding` + 有损回退；fixtures 覆盖 |
-| HTML 直接渲染带来注入风险 | XSS / 远程像素追踪 | 只转纯文本，不注入 DOM，不加载图片 |
-| 首次同步拉全库 | 首屏慢、数据库暴涨 | 14 天窗口 + 单账户 100 封 + 后续逐轮追赶 |
-| 多账户串行超时 | 一轮跑不完，后几个账户饿死 | 整轮 5 分钟预算 + 单账户 60s；下一轮从未处理的账户继续 |
-| 同一服务商并发连接被限流 | 登录失败或断连 | 账户串行，不并行；每账户独立退避 |
-| 阻塞式 IMAP 卡住运行时 | 界面卡顿 | `spawn_blocking` + 连接 8s / 命令 15s / 单账户 60s 预算 |
-| partial fetch 响应解析失败 | 取信报错，且残留状态行会让下一条命令错位 | `imap-proto 0.10.2` 只认 `<n>`，一律整封取 + 本地截断；每批 20 封约束峰值内存 |
-| 大附件邮件一次性读入内存 | 单封 5 MB 时短暂占用明显 | 分批取信，解析后只留 64 K 字符正文，原始字节随批次释放 |
-| 删除账户误删消息 | 数据不可恢复 | 只软停用，不删来源行（CASCADE 边界） |
-| 误改地址/主机产生「影子账户」 | 来源重复、消息分散 | 编辑时锁住地址与主机；派生 id 保证同一账户不重复 |
-| 新增依赖导致体积与构建问题 | 安装包变大 | native-tls/schannel，无 OpenSSL；体积增量单独记录 |
-| 授权码泄漏 | 账号风险 | 只存 keyring；不入库、不回传、不进日志 |
-| 用户用 Outlook/M365 反复失败 | 体验差 | 设置页与文档明确不支持基本认证 |
+| 风险                               | 影响                                     | 对策                                                                          |
+| ---------------------------------- | ---------------------------------------- | ----------------------------------------------------------------------------- |
+| 用 `BODY[]` 取信把服务器邮件标已读 | 用户的邮箱被「替读」                     | 只读 `EXAMINE` + `BODY.PEEK[]`；手工验证第 7 条                               |
+| 163 缺 `ID` 命令                   | 无法选箱，功能不可用                     | 登录后检测 `CAPABILITY` 发 `ID`；单独手工验证                                 |
+| GBK / 非 UTF-8 邮件乱码            | 内容不可读                               | `full_encoding` + 有损回退；fixtures 覆盖                                     |
+| HTML 直接渲染带来注入风险          | XSS / 远程像素追踪                       | 只转纯文本，不注入 DOM，不加载图片                                            |
+| 首次同步拉全库                     | 首屏慢、数据库暴涨                       | 14 天窗口 + 单账户 100 封 + 后续逐轮追赶                                      |
+| 多账户串行超时                     | 一轮跑不完，后几个账户饿死               | 整轮 5 分钟预算 + 单账户 60s；下一轮从未处理的账户继续                        |
+| 同一服务商并发连接被限流           | 登录失败或断连                           | 账户串行，不并行；每账户独立退避                                              |
+| 阻塞式 IMAP 卡住运行时             | 界面卡顿                                 | `spawn_blocking` + 连接 8s / 命令 15s / 单账户 60s 预算                       |
+| partial fetch 响应解析失败         | 取信报错，且残留状态行会让下一条命令错位 | `imap-proto 0.10.2` 只认 `<n>`，一律整封取 + 本地截断；每批 20 封约束峰值内存 |
+| 大附件邮件一次性读入内存           | 单封 5 MB 时短暂占用明显                 | 分批取信，解析后只留 64 K 字符正文，原始字节随批次释放                        |
+| 删除账户误删消息                   | 数据不可恢复                             | 只软停用，不删来源行（CASCADE 边界）                                          |
+| 误改地址/主机产生「影子账户」      | 来源重复、消息分散                       | 编辑时锁住地址与主机；派生 id 保证同一账户不重复                              |
+| 新增依赖导致体积与构建问题         | 安装包变大                               | native-tls/schannel，无 OpenSSL；体积增量单独记录                             |
+| 授权码泄漏                         | 账号风险                                 | 只存 keyring；不入库、不回传、不进日志                                        |
+| 用户用 Outlook/M365 反复失败       | 体验差                                   | 设置页与文档明确不支持基本认证                                                |
 
 **回滚**：本阶段不加迁移，回滚只需移除 `setup` 里的 `start_email_poller` 与四个命令、回退前端区块；已入库的邮件消息与来源行可以保留（不影响 GitHub 与判断流程），也可以逐个删除账户（软停用，消息保留）。
 
@@ -757,3 +777,4 @@ pnpm lint && pnpm test && pnpm build && pnpm check:design && pnpm format:check
 - 2026-11-26 23:42：S2 完成。`parse_message` 纯函数 + 7 个 `.eml` fixtures + `to_new_message` 映射；fixtures 覆盖 GBK、只有 HTML（含追踪像素）、HTML+附件、缺 `Message-ID`、非法 `Date`、`multipart/signed`；77 个测试通过（新增 19 个），探针 1 ignored。
 - 2026-11-27 09:42：S3 完成。新增 `infrastructure/email/client.rs`（建连 / STARTTLS / `ID` / `LOGIN`+PLAIN 回退 / `EXAMINE` / UID 增量取信 / 游标 / 错误分类），`application/inbox/email.rs` 补齐 `MailFetcher`、`sync_account`、`sync_all`、`Backoff`、`start_poller`，`lib.rs` 注册轮询。实测确认 `BODY.PEEK[]<0.262144>` 无法被 `imap-proto 0.10.2` 解析，改成分批整封取。96 个测试通过（新增 19 个），探针 1 ignored；`fmt --check`、`clippy -D warnings` 通过。
 - 2026-11-27 10:05：S4 完成（`c6e1931`）。新增 `commands/email.rs`（四个命令 + `MailProber` / `EmailCredentials` 两个替换点）、`EmailAccountInput` 校验、`EmailError -> CommandError` 映射、`lib.rs` 注册；`sync_all` 抽出 `sync_selected(only)` 并新增 `sync_account_soon`，保存后立即同步该账户。删除账户改用 `config_json = '{}'`（列上有 `json_valid` CHECK，空串会撞约束；`NULL` 会让 `String` 读取失败），仓储新增 `clear_config`；`password` 改选填以支持「只改端口」。105 个测试通过（新增 9 个），探针 1 ignored，`fmt` / `clippy -D warnings` 通过，全部不触网。
+- 2026-11-27 10:26：S5 完成。`api.ts` 补四个调用与 preview 桩；`SettingsPage` 新增邮箱账户区块（列表 / 新增 / 编辑 / 删除 / 测试连接 / 域名预填 / 上限 5）；`InboxPage` 同步时间改取启用来源最新值、补邮箱说明与逐来源失败提示；`InboxMessageDetail` 邮件分支去掉 GitHub 动作；`fixtures` 补两个邮箱来源与两封邮件。新增 12 个前端用例（`pnpm test` 18 通过），`tsc --noEmit`、`lint`、`build`、`check:design`、`fmt --check`、`clippy --all-targets -D warnings`、`cargo test --locked`（105 通过，探针 1 ignored）全部通过；`format:check` 原先把本文件的表格对齐判为未格式化，本次一并格式化。真实账号的「保存 → 首轮同步」与「已读不回写服务器」仍需按 9.2 手工验证。
