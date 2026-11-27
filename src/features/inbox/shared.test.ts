@@ -1,13 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { InboxSource } from "../../lib/api";
-import {
-  emptyHints,
-  inboxTabOrder,
-  isEmailMessage,
-  latestSyncedAt,
-  tabLabels,
-} from "./shared";
+import { emptyHints, inboxTabOrder, isEmailMessage, latestSyncedAt, tabLabels } from "./shared";
 
 const source = (overrides: Partial<InboxSource> = {}): InboxSource => ({
   id: "source-github",

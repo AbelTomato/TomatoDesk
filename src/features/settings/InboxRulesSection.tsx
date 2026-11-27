@@ -166,7 +166,9 @@ function InboxRulesSection() {
         enabled: editing?.enabled ?? true,
       });
       closeForm();
-      setMessage(isEdit ? "规则已更新，只对之后进来的消息生效。" : "规则已保存，只对之后进来的消息生效。");
+      setMessage(
+        isEdit ? "规则已更新，只对之后进来的消息生效。" : "规则已保存，只对之后进来的消息生效。",
+      );
       await reload();
     } catch (saveError) {
       setFailed(true);
@@ -441,7 +443,10 @@ function InboxRulesSection() {
             {preview && preview.sampleTitles.length > 0 ? (
               <ul className="space-y-1 border-l-2 border-border pl-3">
                 {preview.sampleTitles.slice(0, 3).map((title, index) => (
-                  <li key={`${index}-${title}`} className="line-clamp-1 text-xs text-muted-foreground">
+                  <li
+                    key={`${index}-${title}`}
+                    className="line-clamp-1 text-xs text-muted-foreground"
+                  >
                     {title}
                   </li>
                 ))}
