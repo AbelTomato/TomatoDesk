@@ -76,7 +76,7 @@ const devSamples = [
   {
     category: "mention",
     title: "有人在 PR #490 的评论里 @ 了你",
-    summary: "这里的游标要不要改成 base64？现在 `|` 偶尔会截断。",
+    summary: "这个目录名要不要统一成复数？现在两种写法都有。",
     url: "https://github.com/TencentCloud/Octop/pull/490",
   },
   {

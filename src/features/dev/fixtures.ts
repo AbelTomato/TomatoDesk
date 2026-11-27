@@ -712,7 +712,7 @@ const convertInboxMessage = (id: string): Task => {
   if (message.triagedAt) {
     if (message.triageOutcome === "task" && message.triageRefId)
       return findTask(message.triageRefId);
-    throw new Error("这条消息已经判断过，不能再转为待办。");
+    throw new Error("这条消息已经处理过，不能再转为待办。");
   }
   const created = createTask({
     title: message.title,
