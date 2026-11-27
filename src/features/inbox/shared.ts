@@ -36,8 +36,8 @@ export const sourceKindLabels: Record<InboxSourceKind, string> = {
 
 export const triageLabels: Record<TriageOutcome, string> = {
   dismissed: "已忽略",
-  task: "已转为待办",
-  capture: "已提取为随手记",
+  task: "已转待办",
+  capture: "已转为随手记",
 };
 
 /**

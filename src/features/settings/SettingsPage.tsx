@@ -206,11 +206,11 @@ function SettingsPage() {
       setReadBack(status);
       setNotice(
         status.blocked === 0
-          ? "已重新加入回写队列，稍后自动重试。"
+          ? "已重新加入同步队列，稍后自动重试。"
           : "仍有记录没有通过，请确认 Token 权限后重试。",
       );
     } catch (retryError) {
-      setError(retryError instanceof Error ? retryError.message : "重试已读回写失败。");
+      setError(retryError instanceof Error ? retryError.message : "重试已读同步失败。");
     } finally {
       setBusy(false);
     }
@@ -307,9 +307,7 @@ function SettingsPage() {
     setEmailFailed(false);
     try {
       const probe = await testEmailAccount(emailInput());
-      setEmailMessage(
-        `连接成功：邮箱里共 ${probe.mailboxTotal} 封，UIDVALIDITY ${probe.uidValidity}。`,
-      );
+      setEmailMessage(`连接成功：邮箱里共 ${probe.mailboxTotal} 封邮件。`);
     } catch (probeError) {
       setEmailFailed(true);
       setEmailMessage(
@@ -475,7 +473,7 @@ function SettingsPage() {
           <div className="divide-y divide-border">
             <Section
               title="Personal Access Token"
-              description="Fine-grained Token 需授予 Contents、Issues 与 Pull requests 的只读权限，保存在 Windows 凭据管理器。"
+              description="Fine-grained Token 需要 Contents、Issues 与 Pull requests 的只读权限；Token 只保存在本机。"
               action={
                 <span
                   className={cn(
@@ -754,8 +752,8 @@ function SettingsPage() {
             </Section>
 
             <Section
-              title="已读回写"
-              description="收件箱里的「已读」会异步同步给 GitHub；瞬时失败按指数退避重试，认证问题会停下来等重新授权。"
+              title="已读同步"
+              description="在收件箱里标为已读，会同步回 GitHub 通知；失败会自动重试，需要重新授权时会提示。"
               action={
                 readBack.blocked > 0 ? (
                   <Button
@@ -770,11 +768,11 @@ function SettingsPage() {
               }
             >
               {readBack.pending === 0 && readBack.blocked === 0 ? (
-                <p className="text-sm text-muted-foreground">没有等待回写的已读记录。</p>
+                <p className="text-sm text-muted-foreground">都已同步。</p>
               ) : (
                 <div className="space-y-1">
                   <p className="font-mono text-xs">
-                    待回写 {readBack.pending} 条 · 需要重新授权 {readBack.blocked} 条
+                    待同步 {readBack.pending} 条 · 需要重新授权 {readBack.blocked} 条
                   </p>
                   {readBack.lastError ? (
                     <p className="text-xs leading-5 text-destructive">{readBack.lastError}</p>
@@ -837,7 +835,7 @@ function SettingsPage() {
                       <Button
                         variant="ghost"
                         size="sm"
-                        title="拉取全部状态（含已关闭）的历史内容，不受增量游标限制"
+                        title="包含已关闭、已合并的历史内容"
                         disabled={busy || !tokenConfigured}
                         onClick={() => void sync(repo.id, "full")}
                       >
@@ -932,11 +930,6 @@ function SettingsPage() {
             <Section title="关于">
               <p className="font-mono text-xs text-muted-foreground">
                 {info ? `${info.name} ${info.version} · ${info.environment}` : "—"}
-              </p>
-              <p className="mt-2 text-sm text-muted-foreground">
-                设计规范见 <span className="font-mono text-xs">docs/design/design-language.md</span>
-                ，开发模式下访问 <span className="font-mono text-xs">?styleguide</span>{" "}
-                可查看组件基座。
               </p>
             </Section>
           </div>

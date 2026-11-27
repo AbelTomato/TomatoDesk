@@ -69,7 +69,7 @@ function InboxMessageDetail({
                 </p>
               ) : (
                 <p className="mt-2 text-sm text-muted-foreground">
-                  {isEmail ? "这封邮件没有可读正文。" : "这条通知没有正文，摘要即全部内容。"}
+                  {isEmail ? "这封邮件没有可读正文。" : "这条通知没有正文。"}
                 </p>
               )}
             </div>
@@ -86,16 +86,14 @@ function InboxMessageDetail({
             {isEmail ? (
               <div>
                 <p className="text-xs font-medium text-muted-foreground">相关</p>
-                <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                  邮件原文已保存在收件箱，回复请到邮箱客户端。
-                </p>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">回复请到邮箱客户端。</p>
               </div>
             ) : onOpenLocal || message.url ? (
               <div>
                 <p className="text-xs font-medium text-muted-foreground">相关</p>
                 <p className="mt-1 text-xs leading-5 text-muted-foreground">
                   {onOpenLocal
-                    ? "已关联本地线程，可看正文与评论；后续进展仍以仓库模块为准。"
+                    ? "已关联本地线程，可看正文与评论。"
                     : "本地还没有这条线程，只能打开 GitHub 查看。"}
                 </p>
                 <div className="mt-2 flex flex-wrap gap-2">
@@ -116,21 +114,16 @@ function InboxMessageDetail({
 
           <div className="mt-8 border-t border-border pt-5">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <p className="text-xs font-medium text-muted-foreground">判断</p>
+              <p className="text-xs font-medium text-muted-foreground">处理</p>
               {message.triagedAt ? (
                 <span className="font-mono text-xs text-muted-foreground">
-                  {formatRelative(message.triagedAt)}已判断
+                  {formatRelative(message.triagedAt)}
+                  {message.triageOutcome ? ` · ${triageLabels[message.triageOutcome]}` : null}
                 </span>
-              ) : (
-                <span className="font-mono text-xs text-muted-foreground">阅读与判断是两件事</span>
-              )}
+              ) : null}
             </div>
 
-            {message.triagedAt ? (
-              <p className="mt-3 text-sm text-muted-foreground">
-                这条消息已经判断过，判断结果不会被后续同步覆盖。
-              </p>
-            ) : (
+            {message.triagedAt ? null : (
               <div className="mt-2 flex flex-wrap gap-2">
                 <Button size="sm" disabled={mutating} onClick={onConvert}>
                   转为待办
@@ -157,9 +150,6 @@ function InboxMessageDetail({
         <div className="flex min-h-72 items-center justify-center text-center">
           <div>
             <p className="text-sm">选择一条消息查看详情</p>
-            <p className="mt-1 text-sm text-muted-foreground">
-              读完可以先放着，判断留到你决定要做什么的时候。
-            </p>
           </div>
         </div>
       )}

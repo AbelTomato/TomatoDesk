@@ -22,7 +22,6 @@ import {
   type MigrationNotice,
   type TaskCounts,
 } from "../lib/api";
-import { appEnvironment } from "../lib/env";
 import { onCapturesChanged, onInboxChanged, onTasksChanged } from "../lib/events";
 
 type View = "inbox" | "tasks" | "captures" | "repos" | "search" | "settings";
@@ -163,7 +162,6 @@ function AppShell() {
       <aside className="flex w-full shrink-0 flex-col border-b border-border px-4 py-4 lg:h-full lg:w-60 lg:overflow-y-auto lg:border-r lg:border-b-0 lg:px-5 lg:py-6">
         <div className="flex items-baseline justify-between gap-4 lg:block">
           <h1 className="text-base font-bold tracking-tight">TomatoDesk</h1>
-          <p className="font-mono text-xs text-muted-foreground">工作站 · {appEnvironment}</p>
         </div>
 
         <Button className="mt-5 w-full" onClick={() => void openCapture()}>
@@ -196,7 +194,7 @@ function AppShell() {
 
         <div className="mt-auto hidden border-t border-border pt-4 font-mono text-xs leading-5 text-muted-foreground lg:block">
           <p>Ctrl + K 聚焦搜索</p>
-          <p>数据保存在本机 SQLite</p>
+          <p>数据只在本机，不上传</p>
         </div>
       </aside>
 
@@ -205,13 +203,8 @@ function AppShell() {
         {showMigrationNotice && notice ? (
           <div className="flex flex-wrap items-start justify-between gap-3 callout callout-warning border-b border-border px-5 py-3 text-sm sm:px-7">
             <p className="min-w-0 leading-6">
-              数据库已升级到 v{notice.migratedTo}。
+              数据已更新到新版本，旧版本已自动备份。
               {notice.message ? <span className="ml-1">{notice.message}</span> : null}
-              {notice.backupPath ? (
-                <span className="ml-1 break-all font-mono text-xs text-muted-foreground">
-                  迁移前备份：{notice.backupPath}
-                </span>
-              ) : null}
             </p>
             <button
               className="shrink-0 text-xs font-medium text-muted-foreground underline hover:text-foreground"

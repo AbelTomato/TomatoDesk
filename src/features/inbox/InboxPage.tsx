@@ -15,7 +15,6 @@ import {
   countInboxPending,
   convertInboxMessageToTask,
   dismissInboxMessage,
-  getGithubTokenStatus,
   getInboxReadBackStatus,
   getThread,
   ingestInboxMessage,
@@ -50,10 +49,10 @@ const emptyCounts: InboxCounts = { all: 0, pending: 0, unread: 0 };
 
 const emptyHints: Record<TriagedFilter, { title: string; hint: string }> = {
   pending: {
-    title: "待判断的消息已经清空",
-    hint: "新的通知会在同步后出现在这里，读完可以先放着，判断留到你决定要做什么的时候。",
+    title: "都处理完了",
+    hint: "新消息会在下次同步后出现在这里。",
   },
-  triaged: { title: "还没有判断过的消息", hint: "忽略或转为待办之后，消息会留在这里备查。" },
+  triaged: { title: "还没有处理过的消息", hint: "忽略或转为待办之后，消息会留在这里备查。" },
   all: {
     title: "收件箱是空的",
     hint: "配置 GitHub Token 或邮箱账户后，消息会自动同步进来。",
@@ -82,7 +81,7 @@ const devSamples = [
   },
 ];
 
-/** 收件箱：来源、消息流、详情三栏；判断动作全部人工触发。 */
+/** 收件箱：来源、消息流、详情三栏；处理动作全部人工触发。 */
 function InboxPage({
   onOpenTasks,
   onOpenThread,
@@ -98,7 +97,7 @@ function InboxPage({
   const [messages, setMessages] = useState<InboxMessage[]>([]);
   const [counts, setCounts] = useState<InboxCounts>(emptyCounts);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  // 带消息 id 进来时先看「全部」，否则已判断的消息不在待判断列表里。
+  // 带消息 id 进来时先看「全部」，否则已处理的消息不在待处理列表里。
   const [filter, setFilter] = useState<TriagedFilter>(initialMessageId ? "all" : "pending");
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [category, setCategory] = useState("all");
@@ -111,7 +110,6 @@ function InboxPage({
   const [notice, setNotice] = useState<string | null>(null);
   const [mutating, setMutating] = useState(false);
   const [ingesting, setIngesting] = useState(false);
-  const [tokenConfigured, setTokenConfigured] = useState(false);
   const [readBack, setReadBack] = useState<InboxReadBackStatus | null>(null);
   const requestId = useRef(0);
   const sampleIndex = useRef(0);
@@ -186,13 +184,6 @@ function InboxPage({
   useEffect(() => {
     void loadReadBack();
   }, [loadReadBack]);
-
-  // 没有 Token 时只提示去配置，不暴露必然失败的同步入口。
-  useEffect(() => {
-    void getGithubTokenStatus()
-      .then((status) => setTokenConfigured(status.configured))
-      .catch(() => setTokenConfigured(false));
-  }, []);
 
   /**
    * 通知由后台每五分钟轮询一次，同步完成后发事件过来。
@@ -303,9 +294,6 @@ function InboxPage({
     : null;
   // 同步时间取所有启用来源里最新的一次，GitHub 与多个邮箱账户共用同一个位置。
   const lastSyncedAt = latestSyncedAt(sources);
-  const emailSourceCount = sources.filter(
-    (source) => source.kind === "email" && source.enabled,
-  ).length;
   const failingSources = sources.filter((source) => source.enabled && source.lastError);
 
   /**
@@ -365,7 +353,7 @@ function InboxPage({
     setError(null);
     try {
       const task = await convertInboxMessageToTask(selectedMessage.id);
-      // 转换只返回待办，消息的判断字段要重载列表才拿得到；load 会清掉旧提示，提示放在它之后。
+      // 转换只返回待办，消息的处理字段要重载列表才拿得到；load 会清掉旧提示，提示放在它之后。
       await load();
       setNotice(`已转为待办：${task.title}`);
       notifyInboxChanged();
@@ -431,8 +419,8 @@ function InboxPage({
   }
 
   const tabs = [
-    { id: "pending", label: "待判断", count: counts.pending },
-    { id: "triaged", label: "已判断", count: counts.all - counts.pending },
+    { id: "pending", label: "待处理", count: counts.pending },
+    { id: "triaged", label: "已处理", count: counts.all - counts.pending },
     { id: "all", label: "全部", count: counts.all },
   ];
 
@@ -449,12 +437,9 @@ function InboxPage({
         <div className="flex flex-wrap items-baseline justify-between gap-3">
           <div className="flex items-baseline gap-3">
             <h2 className="text-lg font-bold tracking-tight">收件箱</h2>
-            <span className="font-mono text-xs text-muted-foreground">
-              待判断 {counts.pending} · 未读 {counts.unread}
-            </span>
             {lastSyncedAt ? (
               <span className="font-mono text-xs text-muted-foreground">
-                自动同步 · {formatRelative(lastSyncedAt)}
+                {formatRelative(lastSyncedAt)}同步
               </span>
             ) : null}
           </div>
@@ -589,17 +574,6 @@ function InboxPage({
               )}
             </Row>
           ))}
-          <p className="mt-4 px-3 text-xs leading-5 text-muted-foreground">
-            {tokenConfigured
-              ? "GitHub 通知每五分钟自动同步一次，不用手动拉取。"
-              : "配置 GitHub Token 后，通知会自动同步进来。"}
-          </p>
-          {emailSourceCount > 0 ? (
-            <p className="mt-2 px-3 text-xs leading-5 text-muted-foreground">
-              {emailSourceCount} 个邮箱每十分钟收一次信，只读最近 14
-              天，不会改变服务器上的已读状态。
-            </p>
-          ) : null}
           {failingSources.map((source) => (
             <p key={source.id} className="mt-2 px-3 text-xs leading-5 text-destructive">
               {source.name} 同步失败：{source.lastError}

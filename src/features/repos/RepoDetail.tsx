@@ -923,7 +923,7 @@ function RepoDetail({
                   <Button
                     variant="ghost"
                     size="sm"
-                    title="拉取全部状态（含已关闭）的历史内容，不受增量游标限制"
+                    title="包含已关闭、已合并的历史内容"
                     disabled={syncing}
                     onClick={() => void sync("full")}
                   >

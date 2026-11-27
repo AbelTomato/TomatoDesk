@@ -189,9 +189,6 @@ function CaptureDetail({
         <div className="flex min-h-72 items-center justify-center text-center">
           <div>
             <p className="text-sm">选择一条随手记查看详情</p>
-            <p className="mt-1 text-sm text-muted-foreground">
-              正文只在点开时加载，列表不会携带全文。
-            </p>
           </div>
         </div>
       )}
