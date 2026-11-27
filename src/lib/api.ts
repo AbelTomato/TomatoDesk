@@ -653,6 +653,11 @@ export function openCapture(): Promise<void> {
   return call<void>("open_capture");
 }
 
+/** 主窗口不可见时用系统通知告知新版本；通知本身不支持点击跳转。 */
+export function notifyUpdateAvailable(version: string): Promise<void> {
+  return call<void>("notify_update_available", { version });
+}
+
 export function getCapture(id: string): Promise<Capture> {
   return call("get_capture", { input: { id } });
 }

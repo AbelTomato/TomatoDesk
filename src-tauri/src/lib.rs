@@ -8,12 +8,18 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_clipboard_manager::init());
+
+    // 开发构建不注册 updater：开发进程不该把自己的构建当成已发布版本，
+    // 否则一次开发安装就会覆盖生产安装。前端同步跳过检查。
+    #[cfg(not(debug_assertions))]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+
+    builder
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _shortcut, event| {
@@ -39,6 +45,7 @@ pub fn run() {
             commands::finish_capture,
             commands::open_capture,
             commands::dismiss_capture,
+            commands::notify_update_available,
             commands::list_tags,
             commands::create_tag,
             commands::set_capture_tags,
@@ -98,6 +105,7 @@ pub fn run() {
             application::inbox::github::start_poller(database.clone(), app.handle().clone());
             application::inbox::email::start_poller(database.clone(), app.handle().clone());
             application::inbox::read_back::start_worker(database, app.handle().clone());
+            application::updater::start_checker(app.handle().clone());
             platform::setup(app)
         })
         .run(tauri::generate_context!())

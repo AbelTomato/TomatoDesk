@@ -10,7 +10,7 @@ import ReposPage from "../features/repos/ReposPage";
 import SearchPage from "../features/search/SearchPage";
 import SettingsPage from "../features/settings/SettingsPage";
 import TasksPage from "../features/tasks/TasksPage";
-import UpdateBanner from "../features/update/UpdateBanner";
+import UpdateToast from "../features/update/UpdateToast";
 import {
   countCaptures,
   countInboxMessages,
@@ -205,7 +205,6 @@ function AppShell() {
       </aside>
 
       <section className="flex min-h-0 min-w-0 flex-1 flex-col lg:overflow-hidden">
-        <UpdateBanner />
         {showMigrationNotice && notice ? (
           <div className="flex flex-wrap items-start justify-between gap-3 callout callout-warning border-b border-border px-5 py-3 text-sm sm:px-7">
             <p className="min-w-0 leading-6">
@@ -243,6 +242,8 @@ function AppShell() {
           {view === "settings" ? <SettingsPage /> : null}
         </div>
       </section>
+
+      <UpdateToast />
     </main>
   );
 }

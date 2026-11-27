@@ -5,3 +5,4 @@ pub(crate) mod export;
 pub(crate) mod github;
 pub(crate) mod inbox;
 pub(crate) mod tasks;
+pub(crate) mod updater;

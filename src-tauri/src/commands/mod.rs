@@ -10,6 +10,7 @@ mod quick_capture;
 mod repos;
 mod tags;
 mod tasks;
+mod updater;
 
 #[cfg(test)]
 mod tests;
@@ -24,3 +25,4 @@ pub use quick_capture::*;
 pub use repos::*;
 pub use tags::*;
 pub use tasks::*;
+pub use updater::*;

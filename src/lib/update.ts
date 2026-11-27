@@ -1,6 +1,8 @@
 import { check, type Update } from "@tauri-apps/plugin-updater";
 
 const SKIPPED_VERSION_KEY = "tomatodesk:skipped-update-version";
+/** 已经告知过用户的版本；后台检查命中同一版本时不再重复打扰。 */
+const NOTIFIED_VERSION_KEY = "tomatodesk:notified-update-version";
 
 /** 检查 GitHub Release 上的更新清单，超时视为无更新。 */
 export async function findUpdate(): Promise<Update | null> {
@@ -31,6 +33,23 @@ export function clearSkippedVersion() {
     window.localStorage.removeItem(SKIPPED_VERSION_KEY);
   } catch {
     // 同上。
+  }
+}
+
+/** 读过通知的版本号：跨启动保留，避免每次启动都为同一版本弹系统通知。 */
+export function readNotifiedVersion(): string | null {
+  try {
+    return window.localStorage.getItem(NOTIFIED_VERSION_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function rememberNotifiedVersion(version: string) {
+  try {
+    window.localStorage.setItem(NOTIFIED_VERSION_KEY, version);
+  } catch {
+    // localStorage 不可用时只是重复通知，不影响更新流程。
   }
 }
 
