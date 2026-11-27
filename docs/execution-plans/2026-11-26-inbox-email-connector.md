@@ -1,6 +1,6 @@
 # 收件箱邮件连接器（阶段五）接入方案
 
-- 状态：S0 完成（163 真实账号已跑通登录 + `ID` + `EXAMINE` + 取信），S1 完成（契约与存储层），S2 待开始
+- 状态：S0 完成（163 真实账号已跑通登录 + `ID` + `EXAMINE` + 取信），S1 完成（契约与存储层），S2 完成（解析层与 fixtures），S3 待开始
 - 创建日期：2026-11-26
 - 最后更新：2026-11-26
 - 涉及模块：`inbox` / `inbox_sources` / `inbox_messages` / `secrets` / `settings` / `inbox-ui`
@@ -516,6 +516,17 @@ TcpStream::connect_timeout(8s)
 
 验收：单测覆盖 6.3 / 6.4 的每一条规则；fixtures 全部能解析出非空标题与稳定 `external_id`。
 
+**已落地（2026-11-26 23:42）**
+
+- `infrastructure/email/parse.rs`：`parse_message(raw) -> ParsedMail` 纯函数，字段为 `subject` / `from` / `from_address` / `to` / `cc` / `date_unix` / `message_id` / `body` / `attachment_names` / `server`。
+- 清洗规则：单行字段（主题、发件人、附件名）把空白与控制字符压成单空格；正文统一 CRLF→LF、去掉其余控制字符、三个以上连续换行压成两个。
+- 上限常量集中在 `parse.rs`：原文 256 KB、正文 64 K 字符、标题 512、发件人 256、`Message-ID` 512、附件名 256、`payload_json` 4 KB、收件人 20 个。
+- `html_to_text` 自带 `head` / `style` / `script` / `template` 剔除且只保留锚文本，正好满足 6.3 的要求，不需要自己写正则清洗。
+- `application/inbox/email.rs`：`to_new_message(source_id, parsed, now)` 实现 5.5 的映射。`occurred_at` 用 `Date`，超前 24 小时或早于 1970 时留空交给 SQL 填收到时间；`external_updated_at` 与之同值，避免每轮同步都变大而把已读翻回未读；正文为空但有附件时写「（无正文，含 N 个附件：…）」占位；`payload_json` 超过 4 KB 时丢掉收件人列表。
+- 7 个 fixtures：`plain`、`gbk`（GBK 主题 + GBK Base64 正文）、`html-only`（含 `script`、`style`、追踪像素）、`multipart-alternative-attachment`（纯文本优先 + `report.pdf`）、`no-message-id`、`bad-date`（`32 Nov 2026 99:99:99`）、`multipart-signed`。
+- 测试：解析层 11 个用例（含 fixtures 全量遍历与「7 个样本」数量断言、超长原文截断、非邮件字节降级不 panic），映射层 8 个用例（时间归一、UID 兜底、未来日期拒绝、占位文案、摘要 200 字、payload 预算）。`cargo test --locked` 77 通过 + 探针 1 ignored。
+- 一处待 S3 衔接：`date_unix` 在 `Date` 缺失时由调用方用 `INTERNALDATE` 填入，这样每封信的时间取值仍然稳定。
+
 ### S3 同步与轮询
 
 1. `infrastructure/email/client.rs`：`probe(account, password)`、`fetch_new(account, password, cursor) -> FetchOutcome`（`Mailbox` 头信息 + `Vec<ParsedMail>` + `next_cursor`）。整体同步阻塞，调用方用 `spawn_blocking`。
@@ -707,3 +718,4 @@ pnpm lint && pnpm test && pnpm build && pnpm check:design && pnpm format:check
 - 2026-11-26 21:20：163 真实账号实测暴露 `imap` 的 `ID` 缺陷——`imap-proto 0.10.2` 解析 `* ID (...)` 失败后未消费 `aN OK`，下一条命令 tag 断言 panic（`a3` vs `a4`），`EXAMINE` 实际未执行。探针改为双场景并改为自建 TLS 连接：`connect_timeout` + 读写超时 + 自读问候 + 登录前发 `ID` + `Client::new`。实测 163 接受登录前 `ID`（`a0 OK ID completed`），`EXAMINE`/取信待账号验证。
 - 2026-11-26 22:30：S0 闭环。`abeltomato@163.com` 双场景实测：先发 `ID` 时 `EXAMINE INBOX` 正常（2 封、`UIDVALIDITY=1`、主题「新设备登录提醒」、`Message-ID` 完整）；不发 `ID` 时 `EXAMINE` 返回 `No Response: Unsafe Login`。结论：`ID` 必须发送且放在登录前；163 不返回 `UIDNEXT`，游标只能取本轮处理的最大 UID。
 - 2026-11-26 22:45：S1 完成。凭据键名改为按来源 id 派生，`inbox_sources` 增加邮箱账户的 upsert / 列表 / 配置读写 / 软停用 / 清游标 / 计数，`domain` 与 `infrastructure::email` 补齐账户契约与错误分类；58 个测试通过，探针 1 ignored。
+- 2026-11-26 23:42：S2 完成。`parse_message` 纯函数 + 7 个 `.eml` fixtures + `to_new_message` 映射；fixtures 覆盖 GBK、只有 HTML（含追踪像素）、HTML+附件、缺 `Message-ID`、非法 `Date`、`multipart/signed`；77 个测试通过（新增 19 个），探针 1 ignored。
