@@ -2,9 +2,9 @@ use super::{Database, MANUAL_SOURCE_ID};
 use crate::domain::{
     CaptureKind, CapturePageQuery, CaptureSort, CaptureSummary, EmailTls, GithubRelease,
     GithubThread, GithubThreadComment, InboxAction, InboxPageQuery, InboxScope, InboxSourceKind,
-    InboxTab, KeysetCursor, NewCapture, NewInboxMessage, NewSyncRun, NewTask, ReadBackErrorKind,
-    SyncRunStatus, TaskPageQuery, TaskStatus, ThreadKind, ThreadQuery, ThreadRelationship,
-    ThreadState, ThreadSummary, TriageOutcome,
+    InboxTab, KeysetCursor, NewCapture, NewInboxMessage, NewSyncRun, NewTask, ReadBackAction,
+    ReadBackErrorKind, SyncRunStatus, TaskPageQuery, TaskStatus, ThreadKind, ThreadQuery,
+    ThreadRelationship, ThreadState, ThreadSummary, TriageOutcome,
 };
 use crate::infrastructure::email::{EmailConfig, account_id};
 use uuid::Uuid;
@@ -1361,8 +1361,12 @@ fn read_back_queue_retries_then_blocks_and_follows_token_changes() {
         .unwrap();
 
     let queue = db.inbox_read_back();
-    queue.enqueue(&message.id, &source.id, "9001").unwrap();
-    queue.enqueue(&message.id, &source.id, "9001").unwrap();
+    queue
+        .enqueue_github(&message.id, &source.id, "9001")
+        .unwrap();
+    queue
+        .enqueue_github(&message.id, &source.id, "9001")
+        .unwrap();
     let due = queue.due("2999-01-01T00:00:00Z", 10).unwrap();
     assert_eq!(due.len(), 1, "repeated reads reuse the same queue row");
     assert_eq!(due[0].attempts, 0);
@@ -1406,9 +1410,13 @@ fn read_back_queue_retries_then_blocks_and_follows_token_changes() {
     assert_eq!(queue.status().unwrap().pending, 0);
 
     // 删除 Token 丢弃 pending，保留 blocked 供「重新授权」提示。
-    queue.enqueue(&message.id, &source.id, "9001").unwrap();
+    queue
+        .enqueue_github(&message.id, &source.id, "9001")
+        .unwrap();
     assert_eq!(queue.clear_pending().unwrap(), 1);
-    queue.enqueue(&message.id, &source.id, "9001").unwrap();
+    queue
+        .enqueue_github(&message.id, &source.id, "9001")
+        .unwrap();
     let id = queue.due("2999-01-01T00:00:00Z", 10).unwrap()[0].id.clone();
     queue
         .mark_blocked(&id, 3, "缺少 notifications 权限", ReadBackErrorKind::Auth)
@@ -1421,6 +1429,56 @@ fn read_back_queue_retries_then_blocks_and_follows_token_changes() {
     let status = queue.status().unwrap();
     assert_eq!((status.pending, status.blocked), (0, 0));
     assert_eq!(status.last_error, None);
+}
+
+#[test]
+fn email_read_back_rows_keep_uid_metadata_and_are_isolated_from_the_token() {
+    let db = Database::in_memory().unwrap();
+    let id = account_id("me@qq.com", "imap.qq.com");
+    let config = EmailConfig::new("me@qq.com", ("imap.qq.com", 993, EmailTls::Implicit), None);
+    db.inbox_sources()
+        .upsert_email(&id, "me@qq.com", &config.to_json())
+        .unwrap();
+
+    let messages = db.inbox_messages();
+    let message = messages
+        .ingest(NewInboxMessage {
+            source_id: id.clone(),
+            payload_json: Some(r#"{"uid":42,"uidValidity":7}"#.into()),
+            ..inbox_message("m1@example.com", "邮件", "2026-11-26T10:00:00Z")
+        })
+        .unwrap();
+    // 历史数据没有 UID：入队时会静默跳过。
+    let legacy = messages
+        .ingest(NewInboxMessage {
+            source_id: id.clone(),
+            ..inbox_message("m2@example.com", "历史邮件", "2026-11-26T09:00:00Z")
+        })
+        .unwrap();
+
+    let queue = db.inbox_read_back();
+    queue.enqueue_email_seen(&message.id).unwrap();
+    queue.enqueue_email_seen(&message.id).unwrap();
+    queue.enqueue_email_seen(&legacy.id).unwrap();
+
+    let due = queue
+        .due_action("2999-01-01T00:00:00Z", ReadBackAction::EmailSeen, 10)
+        .unwrap();
+    assert_eq!(due.len(), 1, "重复标已读复用同一行，没有 UID 的不入队");
+    assert_eq!(due[0].action, ReadBackAction::EmailSeen);
+    assert_eq!((due[0].uid, due[0].uid_validity), (Some(42), Some(7)));
+    assert!(
+        queue
+            .due_action("2999-01-01T00:00:00Z", ReadBackAction::GithubRead, 10)
+            .unwrap()
+            .is_empty(),
+        "两种动作各取各的"
+    );
+
+    // 删除 GitHub Token 不能顺手清掉邮件意图。
+    assert_eq!(queue.clear_pending().unwrap(), 0);
+    assert_eq!(queue.status().unwrap().pending, 1);
+    assert!(!queue.has_blocked(ReadBackAction::EmailSeen).unwrap());
 }
 
 #[test]

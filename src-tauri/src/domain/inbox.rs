@@ -417,6 +417,38 @@ impl FromStr for ReadBackStatus {
     }
 }
 
+/// 回写队列的动作。同一条队列承载两种远端：GitHub 通知的已读、
+/// 邮件服务器的 `\Seen`，两者的失败分类与执行方式都不同。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadBackAction {
+    /// 把 GitHub 通知标为已读。
+    GithubRead,
+    /// 给邮件加上 `\Seen`。
+    EmailSeen,
+}
+
+impl ReadBackAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::GithubRead => "github_read",
+            Self::EmailSeen => "email_seen",
+        }
+    }
+}
+
+impl FromStr for ReadBackAction {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "github_read" => Ok(Self::GithubRead),
+            "email_seen" => Ok(Self::EmailSeen),
+            _ => Err(format!("unknown read back action: {value}")),
+        }
+    }
+}
+
 /// 失败原因分类只影响重试策略，不参与展示；展示用 `last_error` 的原文。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -456,13 +488,17 @@ impl FromStr for ReadBackErrorKind {
     }
 }
 
-/// 队列中的一条已读回写：只在远端写入失败后存在，成功后即删除。
+/// 队列中的一条已读回写：成功后即删除，失败才留行等下一轮。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InboxReadBack {
     pub id: String,
     pub message_id: String,
     pub source_id: String,
     pub external_id: String,
+    pub action: ReadBackAction,
+    /// 邮件专用：入库时从 `payload_json` 提出来的 UID 与 UIDVALIDITY。
+    pub uid: Option<i64>,
+    pub uid_validity: Option<i64>,
     pub status: ReadBackStatus,
     pub attempts: u32,
     pub next_attempt_at: String,

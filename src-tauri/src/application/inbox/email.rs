@@ -234,6 +234,45 @@ impl MailProber for ImapProber {
     }
 }
 
+/// 已读回写的替换点：凭据读取 + `\Seen` 写入。
+///
+/// 两件事放在同一个 trait 里，是因为它们只在这条路径上成对出现，
+/// 也让测试能彻底绕开 Windows 凭据存储。
+pub(crate) trait MailSeenStore: Send + Sync {
+    /// 账户的授权码；没有配置时返回 `None`。
+    fn password(&self, source_id: &str) -> Result<Option<String>, String>;
+
+    /// 把一批 UID 标为已读，`uid_validity` 与服务器不一致时拒绝写入。
+    fn store_seen(
+        &self,
+        account: &EmailAccount,
+        password: &str,
+        uids: &[u32],
+        uid_validity: u32,
+        deadline: Instant,
+    ) -> Result<(), EmailError>;
+}
+
+/// 生产实现：凭据来自系统凭据库，写入走 IMAP。
+pub(crate) struct ImapSeenStore;
+
+impl MailSeenStore for ImapSeenStore {
+    fn password(&self, source_id: &str) -> Result<Option<String>, String> {
+        secrets::get_email_password(source_id)
+    }
+
+    fn store_seen(
+        &self,
+        account: &EmailAccount,
+        password: &str,
+        uids: &[u32],
+        uid_validity: u32,
+        deadline: Instant,
+    ) -> Result<(), EmailError> {
+        client::store_seen(account, password, uids, uid_validity, deadline)
+    }
+}
+
 /// 一轮里单个账户的结果，用来拼 `inbox-sync-updated` 的载荷。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AccountOutcome {

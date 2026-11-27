@@ -78,7 +78,7 @@ impl From<EmailError> for CommandError {
             EmailError::Unreachable(_) | EmailError::Auth(_) | EmailError::Mailbox(_) => {
                 Self::validation(message)
             }
-            EmailError::Protocol(_) => Self::internal(message),
+            EmailError::Protocol(_) | EmailError::Rejected(_) => Self::internal(message),
         }
     }
 }

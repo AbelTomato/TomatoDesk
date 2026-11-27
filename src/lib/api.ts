@@ -714,7 +714,7 @@ export async function getInboxMessage(id: string): Promise<InboxMessage> {
 
 /**
  * 已读回写队列：`pending` 是还没写出去的意图（失败后按指数退避重试），
- * `blocked` 需要重新授权或手动重试。
+ * `blocked` 需要重新授权或手动重试。队列同时承载 GitHub 通知与邮件的已读。
  */
 export interface InboxReadBackStatus {
   pending: number;

@@ -43,6 +43,16 @@ const MAX_LINE_BYTES: usize = 64 * 1024;
 /// 会让 `imap-proto 0.10.2` 解析失败（只认单数字的 `<n>`），只能整封取回再本地截断。
 const FETCH_CHUNK: usize = 20;
 
+/// 一次 `UID STORE` 带几个 UID。
+///
+/// 合并成一条命令不只是省往返：QQ / 163 对 `STORE` 有频率限制，
+/// 一封一条命令会被判定为异常行为。200 个一批也远低于服务器对命令行长度的容忍度。
+pub const MAX_STORE_UIDS: usize = 200;
+
+/// `+FLAGS.SILENT` 只加标记、不回 untagged FETCH，避免每封邮件都带一轮响应。
+/// 本期只做加法：标为未读不会把远端翻回去。
+const SEEN_FLAGS: &str = "+FLAGS.SILENT (\\Seen)";
+
 /// `ID` 命令的 tag。`Client::new` 的命令计数器从 `a1` 开始，这里用 `a0` 不会撞号。
 const ID_TAG: &str = "a0";
 /// `STARTTLS` 的 tag。必须与 `ID` 区分开：两条命令都在 `Client` 接管前发出。
@@ -192,6 +202,76 @@ pub fn fetch_new(
             last_uid: high_water,
         },
     })
+}
+
+/// 把一批邮件标上 `\Seen`。整体阻塞，调用方负责丢进阻塞线程池。
+///
+/// `uid_validity` 是入库时随 UID 一起记下的编号。与服务器当前值不一致时，
+/// UID 已被重排，`uids` 里的数字可能指向别的邮件——直接放弃（`Rejected`），
+/// 宁可少标一封，绝不标错一封。
+pub fn store_seen(
+    account: &EmailAccount,
+    password: &str,
+    uids: &[u32],
+    uid_validity: u32,
+    deadline: Instant,
+) -> Result<(), EmailError> {
+    if uids.is_empty() {
+        return Ok(());
+    }
+    let mut session = open_session(account, password)?;
+    let mailbox = select_read_write(&mut session, account)?;
+    let current = mailbox.uid_validity.unwrap_or(0);
+    if current != uid_validity {
+        let _ = session.logout();
+        return Err(EmailError::Rejected(format!(
+            "邮箱编号已变化（{uid_validity} → {current}）"
+        )));
+    }
+
+    for chunk in uids.chunks(MAX_STORE_UIDS) {
+        // 到点就整体算失败：`+FLAGS.SILENT` 是幂等的，重试一次比丢掉半批更安全。
+        // 调用方只在 Ok 时删队列行，这里返回错误能保证剩下的 UID 下一轮还会再试。
+        if Instant::now() >= deadline {
+            let _ = session.logout();
+            return Err(EmailError::Unreachable("回写超时，下一轮接着写".to_owned()));
+        }
+        let set = uid_set(chunk);
+        session
+            .uid_store(&set, SEEN_FLAGS)
+            .map_err(|error| store_error(&error, account.mailbox()))?;
+    }
+    let _ = session.logout();
+    Ok(())
+}
+
+/// `UID STORE` 的序列集：逗号分隔，顺序无关；调用方负责去重。
+fn uid_set(uids: &[u32]) -> String {
+    uids.iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// 取信走 `EXAMINE`（只读），写入必须换成 `SELECT`：只读模式下服务器会拒绝 `STORE`。
+fn select_read_write(
+    session: &mut Session,
+    account: &EmailAccount,
+) -> Result<imap::types::Mailbox, EmailError> {
+    session
+        .select(account.mailbox())
+        .map_err(|error| mailbox_error(&error, account.mailbox()))
+}
+
+/// 写入阶段的 `NO` / `BAD` 表示「这次请求不成立」：UID 不存在、文件夹不可写、
+/// 命令不被支持。重试不会变好，与网络抖动分开分类。
+fn store_error(error: &imap::Error, mailbox: &str) -> EmailError {
+    match error {
+        imap::Error::No(detail) | imap::Error::Bad(detail) => {
+            EmailError::Rejected(format!("{mailbox}：{detail}"))
+        }
+        other => map_error(other),
+    }
 }
 
 /// 首次窗口：`SINCE <今天 - initial_days>`。
@@ -600,5 +680,49 @@ mod tests {
         assert!(is_ok_status("a0 ok"));
         assert!(!is_ok_status("a0 BAD Unknown command"));
         assert!(!is_ok_status(""));
+    }
+
+    #[test]
+    fn seen_writes_are_merged_into_batches_of_two_hundred() {
+        let uids: Vec<u32> = (1..=450).collect();
+        let batches: Vec<usize> = uids.chunks(MAX_STORE_UIDS).map(<[u32]>::len).collect();
+        assert_eq!(batches, vec![200, 200, 50], "一条命令最多带 200 个 UID");
+
+        assert_eq!(uid_set(&[12, 15, 31]), "12,15,31");
+        assert_eq!(uid_set(&[]), "");
+        // 空集合不再建连：调用方漏判也不会产生一次无意义的握手。
+        assert_eq!(
+            store_seen(&test_account(), "x", &[], 1, Instant::now()),
+            Ok(())
+        );
+    }
+
+    fn test_account() -> EmailAccount {
+        use crate::domain::EmailTls;
+        use crate::infrastructure::email::EmailConfig;
+
+        EmailAccount::new(EmailConfig::new(
+            "me@example.com",
+            ("imap.example.com", 993, EmailTls::Implicit),
+            None,
+        ))
+    }
+
+    #[test]
+    fn store_rejections_are_separated_from_network_failures() {
+        // UID 不存在、命令不支持：重试不会变好，交给队列删行。
+        assert!(matches!(
+            store_error(&imap::Error::No("UID not found".into()), "INBOX"),
+            EmailError::Rejected(_)
+        ));
+        assert!(matches!(
+            store_error(&imap::Error::Bad("STORE not supported".into()), "INBOX"),
+            EmailError::Rejected(_)
+        ));
+        // 连接断了还能重试。
+        assert!(matches!(
+            store_error(&imap::Error::ConnectionLost, "INBOX"),
+            EmailError::Unreachable(_)
+        ));
     }
 }

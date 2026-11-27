@@ -21,7 +21,7 @@ pub use inbox::{
     EmailAccountProbe, EmailAccountStatus, EmailTls, InboxAction, InboxActionResult, InboxCounts,
     InboxMessage, InboxMessageCursor, InboxPage, InboxPageQuery, InboxReadBack,
     InboxReadBackStatus, InboxScope, InboxSource, InboxSourceKind, InboxTab, NewInboxMessage,
-    ReadBackErrorKind, ReadBackStatus, TriageOutcome,
+    ReadBackAction, ReadBackErrorKind, ReadBackStatus, TriageOutcome,
 };
 pub use sync_run::{NewSyncRun, SyncRun, SyncRunStatus};
 pub use tag::Tag;

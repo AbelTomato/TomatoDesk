@@ -513,7 +513,7 @@ function SettingsPage() {
 
             <Section
               title="邮箱账户"
-              description="用授权码或应用专用密码接收邮件；同步是只读的，不会改变服务器上的已读状态。"
+              description="用授权码或应用专用密码接收邮件；在收件箱里标为已读会同步到网页邮箱。"
             >
               {emailAccounts.length === 0 ? (
                 <p className="text-sm text-muted-foreground">
@@ -753,7 +753,7 @@ function SettingsPage() {
 
             <Section
               title="已读同步"
-              description="在收件箱里标为已读，会同步回 GitHub 通知；失败会自动重试，需要重新授权时会提示。"
+              description="标为已读会同步给 GitHub 通知和网页邮箱；标为未读不会把邮箱改回去。失败会自动重试，需要重新授权时会提示。"
               action={
                 readBack.blocked > 0 ? (
                   <Button

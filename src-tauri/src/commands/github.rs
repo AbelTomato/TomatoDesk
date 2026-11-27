@@ -77,7 +77,8 @@ pub fn save_github_token(
     let input = parse_input::<GithubTokenInput>(input)?.validate()?;
     secrets::save_github_token(&input.token).map_err(CommandError::internal)?;
     // 换 Token 往往就是为了修掉认证失败，顺手把 blocked 的已读回写放回队列。
-    application::inbox::github::reset_after_token_saved(&database).map_err(CommandError::from)?;
+    application::inbox::read_back::reset_after_token_saved(&database)
+        .map_err(CommandError::from)?;
     Ok(GithubTokenStatus { configured: true })
 }
 
@@ -85,7 +86,8 @@ pub fn save_github_token(
 pub fn delete_github_token(database: State<'_, Database>) -> CommandResult<GithubTokenStatus> {
     secrets::delete_github_token().map_err(CommandError::internal)?;
     // 没有凭据就写不出去，pending 行直接丢弃；blocked 行保留，继续提示需要重新授权。
-    application::inbox::github::clear_pending_after_token_removed(&database)
+    // 只清 GitHub 的行：邮件行用各自的授权码。
+    application::inbox::read_back::clear_pending_after_token_removed(&database)
         .map_err(CommandError::from)?;
     Ok(GithubTokenStatus { configured: false })
 }

@@ -10,10 +10,10 @@ use serde::{Deserialize, Serialize};
 use tauri::Emitter;
 
 use crate::{
-    domain::{InboxMessage, InboxReadBack, InboxSourceKind, NewInboxMessage, ReadBackErrorKind},
+    domain::NewInboxMessage,
     infrastructure::{
-        db::{Database, DbResult},
-        github::{GithubClient, GithubError, GithubNotification},
+        db::Database,
+        github::{GithubClient, GithubNotification},
         secrets,
     },
 };
@@ -30,18 +30,6 @@ pub const INBOX_SYNC_EVENT: &str = "inbox-sync-updated";
 /// 轮询间隔。通知比仓库内容更看重及时性，五分钟一次足够；
 /// 失败也走同一个间隔，避免 Token 失效时每一轮都去打 GitHub。
 const POLL_INTERVAL: Duration = Duration::from_secs(5 * 60);
-
-/// 已读回写队列：退避的最小步长是一分钟，队列也按一分钟一轮推进。
-const READ_BACK_INTERVAL: Duration = Duration::from_secs(60);
-/// 一轮最多处理这么多条，避免积压时一次性打满限流。
-const READ_BACK_BATCH: u32 = 20;
-/// 连续失败超过这个次数转 blocked，等待人工重试。
-const READ_BACK_MAX_ATTEMPTS: u32 = 6;
-const READ_BACK_BASE_SECONDS: i64 = 60;
-const READ_BACK_MAX_SECONDS: i64 = 30 * 60;
-
-/// 队列有变化时广播，前端据此刷新「等待重试 / 需要重新授权」提示。
-pub const INBOX_READ_BACK_EVENT: &str = "inbox-read-back-updated";
 
 /// 后台轮询 GitHub 通知，取代界面上的手动同步。
 ///
@@ -137,191 +125,6 @@ pub(crate) async fn sync(database: &Database) -> Result<InboxSyncSummary, String
         pending_count: counts.pending,
         synced_at,
     })
-}
-
-/// 本地「已读」不再直接打网络：写进队列，由后台循环按退避重试。
-///
-/// 这样点已读不会被网络超时拖住，失败也不会被静默吞掉——
-/// 队列里的每一行都表示「本地已读、远端还不知道」。
-pub(crate) fn enqueue_read_back(database: &Database, message: &InboxMessage) -> DbResult<()> {
-    let Some(source) = database.inbox_sources().get(&message.source_id)? else {
-        return Ok(());
-    };
-    // 只回写 GitHub 通知；外部 id 不是数字时远端一定拒绝，不必入队。
-    if source.kind != InboxSourceKind::Github || !is_notification_id(&message.external_id) {
-        return Ok(());
-    }
-    database
-        .inbox_read_back()
-        .enqueue(&message.id, &message.source_id, &message.external_id)
-}
-
-fn is_notification_id(value: &str) -> bool {
-    !value.is_empty() && value.chars().all(|digit| digit.is_ascii_digit())
-}
-
-/// 本地改回未读：撤销还没写出去的「已读」意图。
-pub(crate) fn cancel_read_back(database: &Database, message_id: &str) -> DbResult<usize> {
-    database.inbox_read_back().remove_for_message(message_id)
-}
-
-/// 重新保存 Token 后让 blocked 行回到自动重试，不必逐条点重试。
-pub(crate) fn reset_after_token_saved(database: &Database) -> DbResult<usize> {
-    database.inbox_read_back().reset_blocked()
-}
-
-/// 删除 Token 后 pending 行写不出去，直接丢弃；blocked 保留，继续提示需要授权。
-pub(crate) fn clear_pending_after_token_removed(database: &Database) -> DbResult<usize> {
-    database.inbox_read_back().clear_pending()
-}
-
-/// 处理一批到期的回写。没有 Token 时整轮跳过，不消耗退避次数。
-async fn process_due(database: &Database) -> Result<usize, String> {
-    let Some(token) = secrets::get_github_token()? else {
-        return Ok(0);
-    };
-    let client =
-        GithubClient::new(token, Duration::from_secs(10)).map_err(|error| error.to_string())?;
-    let now = Utc::now();
-    let due = database
-        .inbox_read_back()
-        .due(&iso(now), READ_BACK_BATCH)
-        .map_err(|error| error.to_string())?;
-
-    let mut handled = 0;
-    for entry in due {
-        match client.mark_notification_read(&entry.external_id).await {
-            Ok(()) => {
-                database
-                    .inbox_read_back()
-                    .remove(&entry.id)
-                    .map_err(|error| error.to_string())?;
-            }
-            Err(error) => {
-                apply_failure(database, &entry, &error, now).map_err(|error| error.to_string())?;
-            }
-        }
-        handled += 1;
-    }
-    Ok(handled)
-}
-
-/// 队列循环：一分钟一轮，启动时立即跑一次。
-pub fn start_read_back_worker(database: Database, app: tauri::AppHandle) {
-    tauri::async_runtime::spawn(async move {
-        let mut interval = tokio::time::interval(READ_BACK_INTERVAL);
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            interval.tick().await;
-            let Ok(handled) = process_due(&database).await else {
-                continue;
-            };
-            if handled == 0 {
-                continue;
-            }
-            if let Ok(status) = database.inbox_read_back().status() {
-                let _ = app.emit(INBOX_READ_BACK_EVENT, status);
-            }
-        }
-    });
-}
-
-/// 失败后的处置方式：能重试的排时间，不能重试的删行或转人工。
-#[derive(Debug, PartialEq, Eq)]
-enum FailurePlan {
-    /// 远端线程已不存在，或请求本身不可能成功：删行。
-    Drop,
-    /// 需要人工介入：保留记录，退出自动重试。
-    Block(ReadBackErrorKind),
-    /// 可恢复：到点再试。
-    Retry {
-        delay_seconds: i64,
-        kind: ReadBackErrorKind,
-    },
-}
-
-fn plan_failure(error: &GithubError, attempts: u32) -> FailurePlan {
-    match error {
-        GithubError::Unauthorized | GithubError::MissingNotificationsScope => {
-            FailurePlan::Block(ReadBackErrorKind::Auth)
-        }
-        // 404 说明线程没了；其它 4xx 多为请求本身有问题，重试不会变好。
-        GithubError::NotFound | GithubError::Api(_) | GithubError::InvalidRepository(_) => {
-            FailurePlan::Drop
-        }
-        GithubError::RateLimited(reset) => {
-            if attempts > READ_BACK_MAX_ATTEMPTS {
-                FailurePlan::Block(ReadBackErrorKind::Exhausted)
-            } else {
-                FailurePlan::Retry {
-                    delay_seconds: rate_limit_delay(reset.as_deref()),
-                    kind: ReadBackErrorKind::RateLimited,
-                }
-            }
-        }
-        GithubError::Request(_) | GithubError::Unavailable(_) => {
-            if attempts > READ_BACK_MAX_ATTEMPTS {
-                FailurePlan::Block(ReadBackErrorKind::Exhausted)
-            } else {
-                FailurePlan::Retry {
-                    delay_seconds: backoff_seconds(attempts),
-                    kind: ReadBackErrorKind::Transient,
-                }
-            }
-        }
-    }
-}
-
-fn apply_failure(
-    database: &Database,
-    entry: &InboxReadBack,
-    error: &GithubError,
-    now: DateTime<Utc>,
-) -> DbResult<()> {
-    let attempts = entry.attempts + 1;
-    let message = error.to_string();
-    let repository = database.inbox_read_back();
-    match plan_failure(error, attempts) {
-        FailurePlan::Drop => repository.remove(&entry.id).map(|_| ()),
-        FailurePlan::Block(kind) => repository.mark_blocked(&entry.id, attempts, &message, kind),
-        FailurePlan::Retry {
-            delay_seconds,
-            kind,
-        } => {
-            let delay = jittered(delay_seconds, &entry.id, now);
-            let next = iso(now + ChronoDuration::seconds(delay));
-            repository.mark_retry(&entry.id, attempts, &next, &message, kind)
-        }
-    }
-}
-
-/// 指数退避：1、2、4、8、16、30 分钟，封顶 30 分钟。
-fn backoff_seconds(attempts: u32) -> i64 {
-    let factor = 1_i64 << attempts.saturating_sub(1).min(10);
-    (READ_BACK_BASE_SECONDS * factor).min(READ_BACK_MAX_SECONDS)
-}
-
-/// 限流优先用远端给的时间：`x-ratelimit-reset` 是 epoch 秒，`retry-after` 是秒数。
-fn rate_limit_delay(reset: Option<&str>) -> i64 {
-    let Some(value) = reset.and_then(|value| value.parse::<i64>().ok()) else {
-        return READ_BACK_BASE_SECONDS;
-    };
-    if value >= 1_000_000_000 {
-        (value - Utc::now().timestamp()).clamp(30, READ_BACK_MAX_SECONDS)
-    } else {
-        value.clamp(10, READ_BACK_MAX_SECONDS)
-    }
-}
-
-/// ±20% 抖动，避免多条同时失败后在同一个 tick 里挤在一起重试。
-fn jittered(base: i64, seed_text: &str, now: DateTime<Utc>) -> i64 {
-    let span = base / 5;
-    if span <= 0 {
-        return base;
-    }
-    let seed = seed_text.bytes().map(u32::from).sum::<u32>() ^ now.timestamp_subsec_millis();
-    let offset = i64::from(seed % (span as u32 * 2 + 1)) - span;
-    (base + offset).max(10)
 }
 
 /// 命中本地已同步的 PR / Issue 时写 `related_kind = github_thread`，点击直接进详情；
@@ -491,8 +294,7 @@ fn now_iso() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        FailurePlan, backoff_seconds, category_for_reason, convert_api_url, is_notification_id,
-        jittered, overlap_since, plan_failure, rate_limit_delay, reason_label, subject_html_url,
+        category_for_reason, convert_api_url, overlap_since, reason_label, subject_html_url,
         thread_number,
     };
     use crate::infrastructure::github::{
@@ -607,78 +409,5 @@ mod tests {
             Some("2026-11-26T09:55:00Z")
         );
         assert_eq!(overlap_since(Some("not-a-date")), None);
-    }
-
-    #[test]
-    fn failures_choose_between_retry_drop_and_block() {
-        use crate::domain::ReadBackErrorKind;
-        use crate::infrastructure::github::GithubError;
-
-        assert_eq!(
-            plan_failure(&GithubError::Request("超时".into()), 1),
-            FailurePlan::Retry {
-                delay_seconds: 60,
-                kind: ReadBackErrorKind::Transient
-            }
-        );
-        assert_eq!(backoff_seconds(2), 120);
-        assert_eq!(backoff_seconds(3), 240);
-        assert_eq!(
-            backoff_seconds(6),
-            1800,
-            "the last delay is capped at thirty minutes"
-        );
-        assert_eq!(
-            plan_failure(&GithubError::Unavailable("HTTP 503".into()), 7),
-            FailurePlan::Block(ReadBackErrorKind::Exhausted),
-            "backoff gives up after the sixth retry"
-        );
-
-        // 认证与权限问题重试没有意义，等重新授权。
-        assert_eq!(
-            plan_failure(&GithubError::Unauthorized, 1),
-            FailurePlan::Block(ReadBackErrorKind::Auth)
-        );
-        assert_eq!(
-            plan_failure(&GithubError::MissingNotificationsScope, 1),
-            FailurePlan::Block(ReadBackErrorKind::Auth)
-        );
-
-        // 线程没了、请求本身有问题：删行，不重试。
-        assert_eq!(plan_failure(&GithubError::NotFound, 1), FailurePlan::Drop);
-        assert_eq!(
-            plan_failure(&GithubError::Api("HTTP 422".into()), 1),
-            FailurePlan::Drop
-        );
-
-        assert_eq!(
-            plan_failure(&GithubError::RateLimited(Some("120".into())), 1),
-            FailurePlan::Retry {
-                delay_seconds: 120,
-                kind: ReadBackErrorKind::RateLimited
-            }
-        );
-        assert_eq!(rate_limit_delay(None), 60);
-        assert_eq!(rate_limit_delay(Some("5")), 10, "retry-after has a floor");
-        assert_eq!(rate_limit_delay(Some("999999")), 1800, "and a ceiling");
-    }
-
-    #[test]
-    fn backoff_jitter_stays_within_twenty_percent() {
-        let now = chrono::Utc::now();
-        for seed in ["a", "bb", "ccc", "notification-4242"] {
-            let delay = jittered(600, seed, now);
-            assert!(
-                (480..=720).contains(&delay),
-                "jitter must keep the retry inside ±20%"
-            );
-        }
-    }
-
-    #[test]
-    fn only_numeric_notification_ids_are_written_back() {
-        assert!(is_notification_id("4242"));
-        assert!(!is_notification_id(""));
-        assert!(!is_notification_id("thread-1"));
     }
 }

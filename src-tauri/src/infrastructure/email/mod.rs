@@ -156,6 +156,9 @@ pub enum EmailError {
     Mailbox(String),
     /// 协议异常：非预期响应、超长行、状态行格式错误。
     Protocol(String),
+    /// 服务器拒绝了这次写入：UID 不存在、文件夹不可写、命令不被支持。
+    /// 重试不会变好，已经入库的消息只是没标上已读。
+    Rejected(String),
 }
 
 impl EmailError {
@@ -183,6 +186,7 @@ impl fmt::Display for EmailError {
             }
             Self::Mailbox(detail) => write!(formatter, "无法打开邮件文件夹：{detail}"),
             Self::Protocol(detail) => write!(formatter, "邮件服务器返回异常响应：{detail}"),
+            Self::Rejected(detail) => write!(formatter, "邮件服务器没有接受这次操作：{detail}"),
         }
     }
 }

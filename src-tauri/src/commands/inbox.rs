@@ -4,7 +4,7 @@ use crate::{
     application,
     domain::{
         InboxActionResult, InboxCounts, InboxMessage, InboxPage, InboxReadBackStatus, InboxSource,
-        Task,
+        ReadBackAction, Task,
     },
     infrastructure::{db::Database, secrets},
 };
@@ -141,16 +141,23 @@ pub(super) fn get_inbox_read_back_status_in(
         .map_err(CommandError::from)
 }
 
-/// 手动重试：把 blocked 行放回队列。没有 Token 时先让用户去配，
-/// 否则重置完也只会再失败一次。
+/// 手动重试：把 blocked 行放回队列。
+///
+/// 只有存在 GitHub 的 blocked 行时才要求配 Token：邮件行用的是各自的授权码，
+/// 没有 GitHub Token 也不该拦住用户重试邮件。
 pub(super) fn retry_inbox_read_back_in(database: &Database) -> CommandResult<InboxReadBackStatus> {
-    if secrets::get_github_token()
-        .map_err(CommandError::internal)?
-        .is_none()
+    let github_blocked = database
+        .inbox_read_back()
+        .has_blocked(ReadBackAction::GithubRead)
+        .map_err(CommandError::from)?;
+    if github_blocked
+        && secrets::get_github_token()
+            .map_err(CommandError::internal)?
+            .is_none()
     {
         return Err(CommandError::validation("请先保存 GitHub Token"));
     }
-    application::inbox::github::reset_after_token_saved(database).map_err(CommandError::from)?;
+    application::inbox::read_back::reset_after_token_saved(database).map_err(CommandError::from)?;
     get_inbox_read_back_status_in(database)
 }
 

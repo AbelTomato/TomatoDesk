@@ -5,6 +5,7 @@
 
 pub(crate) mod email;
 pub(crate) mod github;
+pub(crate) mod read_back;
 
 use crate::{
     domain::{
@@ -121,19 +122,20 @@ pub(crate) fn to_task(database: &Database, id: &str) -> DbResult<Task> {
         .ok_or(DbError::NotFound("task"))
 }
 
-/// 只对真正变了的消息动队列：`read` 入队，`unread` 撤销还没写出去的意图。
+/// 只对真正变了的消息动队列：`read` 入队（GitHub 或邮件，按来源分派），
+/// `unread` 撤销还没写出去的意图。
 fn sync_read_back(database: &Database, action: InboxAction, ids: &[String]) -> DbResult<()> {
     match action {
         InboxAction::Read => {
             for id in ids {
                 if let Some(message) = database.inbox_messages().get(id)? {
-                    github::enqueue_read_back(database, &message)?;
+                    read_back::enqueue(database, &message)?;
                 }
             }
         }
         InboxAction::Unread => {
             for id in ids {
-                github::cancel_read_back(database, id)?;
+                read_back::cancel(database, id)?;
             }
         }
         InboxAction::Dismiss | InboxAction::Task => {}

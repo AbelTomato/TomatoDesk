@@ -804,7 +804,7 @@ function InboxPage({
           ))}
           {readBack && readBack.blocked > 0 ? (
             <p className="mt-2 px-3 text-xs leading-5 text-warning">
-              {readBack.blocked} 条已读没能同步给 GitHub，到设置页确认权限后可重试。
+              {readBack.blocked} 条已读没同步出去，到设置页确认授权后可重试。
             </p>
           ) : null}
         </aside>
