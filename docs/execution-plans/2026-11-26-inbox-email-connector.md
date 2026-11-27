@@ -1,8 +1,8 @@
 # 收件箱邮件连接器（阶段五）接入方案
 
-- 状态：S0 完成（163 真实账号已跑通登录 + `ID` + `EXAMINE` + 取信），S1 完成（契约与存储层），S2 完成（解析层与 fixtures），S3 待开始
+- 状态：S0 完成（163 真实账号已跑通登录 + `ID` + `EXAMINE` + 取信），S1 完成（契约与存储层），S2 完成（解析层与 fixtures），S3 完成（IMAP 取信与多账户轮询），S4 待开始
 - 创建日期：2026-11-26
-- 最后更新：2026-11-26
+- 最后更新：2026-11-27
 - 涉及模块：`inbox` / `inbox_sources` / `inbox_messages` / `secrets` / `settings` / `inbox-ui`
 - 目标版本：v0.5.0
 - 前置文档：`docs/execution-plans/2026-11-26-capture-inbox-split.md`（第 8 节阶段五）
@@ -382,7 +382,7 @@ interface InboxSyncSummary {
 - **UIDVALIDITY**：每次 EXAMINE 后比对，变化即全量重扫窗口。
 - **163 / 126 的 `Unsafe Login`**：`EXAMINE` 之前必须先发 `ID`，否则服务器直接拒绝——2026-11-26 对 `abeltomato@163.com` 实测，不发 `ID` 时 `EXAMINE INBOX` 返回 `No Response: Unsafe Login`。`ID` 在**登录前**发送即可满足要求（同一账号实测先 `a0 OK ID completed`、再登录、`EXAMINE` 正常），所以连接流程在 `LOGIN` 之前无条件插入一次 `ID ("name" "TomatoDesk" "version" "<pkg version>")`，不依赖 `CAPABILITY` 探测；服务器不支持时回 `BAD`，忽略即可。
 - **`UIDNEXT` 不可依赖**：163 的 `EXAMINE` 响应里 `UIDNEXT` 为 `None`（同一轮实测 `UIDVALIDITY=Some(1)`、`UIDNEXT=None`）。因此游标 `lastUid` 只能取本轮实际处理过的最大 UID，不能用 `UIDNEXT - 1` 推算。
-- **认证方式**：优先 `LOGIN`，服务器拒绝且支持 `AUTH=PLAIN` 时回退 `AUTHENTICATE PLAIN`；不做 `XOAUTH2`。
+- **认证方式**：优先 `LOGIN`；只有当服务器回 `BAD`（不认识 `LOGIN` 这条命令）时才用 `AUTHENTICATE PLAIN` 回退。凭证被拒（`NO`）时不回退——重试没有意义，还会触发服务商风控。不做 `XOAUTH2`。`imap 2.4.1` 的 `Client` 在未认证态没有 `capabilities()`，因此回退判断只能看错误类型，不能先探能力。
 - **QQ / 163 / Gmail**：必须用授权码 / 应用专用密码，不能填登录密码；设置页提示文案写清楚，错误提示也指向这一点。
 - **Outlook / Microsoft 365**：官方已关闭 IMAP 基本认证，本方案不支持，文档与设置页明确标注。
 
@@ -393,13 +393,13 @@ interface InboxSyncSummary {
 - 正文选择顺序：`text/plain` → `text/html` 转纯文本 → 空。`multipart/signed` 取第一段；`multipart/report`（退信）按普通邮件处理。
 - HTML 只做「转纯文本」，**不渲染进 WebView**：`script` / `style` / `head` 整段丢弃，块级元素转换行，链接保留锚文本（不保留 href，避免误点）。
 - 附件不下载：只统计数量与文件名，正文为空时用「（无正文，含 N 个附件：a.pdf、b.png）」占位。
-- 超大邮件：只取 `BODY.PEEK[]` 的前 256 KB 交给解析器（超出部分截断），正文最终截断到 65536 字符；`payload_json` 控制在 4 KB 内。
+- 超大邮件：整封 `BODY.PEEK[]` 取回后，由解析器只读前 256 KB（超出部分截断），正文最终截断到 65536 字符；`payload_json` 控制在 4 KB 内。**不能**用 `BODY.PEEK[]<0.262144>` 做 partial fetch：`imap-proto 0.10.2` 的序号解析器只认 `<n>`（单数字），收到 `<0.262144>` 会 `ParseError`，且残留状态行会让下一条命令 tag 断言 panic（2026-11-27 已用 `parse_response` 实测）。因此改为「分批整封取 + 本地截断」，每批 20 封以约束峰值内存。
 - 日历邀请（`text/calendar`）、加密邮件（`multipart/encrypted`）没有可读正文时按「无正文」处理，不尝试解密。
 
 ### 6.4 容量与时间预算
 
-- 单账户单轮最多处理 100 封；超出部分留到下一轮，游标只推进到已处理的最大 UID，不会漏也不会重复。
-- 单账户：连接超时 20s、单轮预算 60s；整轮（全部账户）预算 5 分钟，到点后剩余账户留到下一轮。
+- 单账户单轮最多处理 100 封，**增量**取最旧的一批（游标停在本轮处理的最大 UID，下一轮继续，不会漏也不会重复）；**首次**取最新的一批（首屏不出现陈年旧信，更早的窗口内邮件不再补拉，见 5.4）。游标只在整轮成功后推进。
+- 单账户：连接超时 8s、单条命令读写超时 15s、单轮预算 60s；整轮（全部账户）预算 5 分钟，到点后剩余账户留到下一轮。预算由客户端在阻塞内部逐批检查——`spawn_blocking` 无法从外部打断，只能自己收手。
 - 单封解析上限 256 KB、正文 64 KB、摘要 200 字，避免一封巨型邮件拖慢整轮或撑大数据库。
 - 账户数上限 5，最坏情况一轮串行 5 个账户仍在 5 分钟预算内。
 
@@ -535,6 +535,20 @@ TcpStream::connect_timeout(8s)
 
 验收：无账户时整轮零请求；一个账户失败不影响另一个账户；断网时 `last_error` 有值且游标不变；连续两轮同步不产生重复行；`UIDVALIDITY` 变化后能重扫且不重复。
 
+**已落地（2026-11-27）**
+
+- `infrastructure/email/client.rs`：`MailCursor`（`uidValidity` / `lastUid`，坏 JSON 与 `lastUid = 0` 视为无游标）、`FetchOutcome`、`probe`、`fetch_new(account, password, cursor, deadline)`。
+- 建连：`TcpStream::connect_timeout(8s)` + 15s 读写超时 → `implicit` 直接 native-tls / `starttls` 先明文读问候、发 `s0 STARTTLS`、再在同一连接升级 → 自读问候 → 登录前发 `a0 ID` → `Client::new` 接管。`STARTTLS` 与 `ID` 用不同 tag（`s0` / `a0`），`Client` 的计数器从 `a1` 起，三者不撞号。
+- 认证：`LOGIN` 失败且错误是 `BAD` 时才回退 `AUTHENTICATE PLAIN`；`NO`（凭证被拒、`Unsafe Login`）直接按认证问题返回并退避，不重试。
+- 取信：`EXAMINE`（只读）→ 增量 `UID <last>:*` 后按 `uid > last` 过滤（区间陷阱）→ 首次 `SINCE <今天-14d>` → 排序后按 5.4 选批 → 每 20 封一批 `UID FETCH (UID RFC822.SIZE INTERNALDATE BODY.PEEK[])` → 逐封解析并回填 `server` 元数据、`Date` 缺失时用 `INTERNALDATE`。
+- 游标：只在整批取回后前移，取值是本轮实际处理的最大 UID；`UIDNEXT` 完全不参与（163 为 `None`）。
+- `application/inbox/email.rs`：`MailFetcher` trait（生产实现 `ImapFetcher` 转发到客户端，测试用假实现）、`sync_account`（读游标 → 取信 → 逐封 `ingest` → `mark_synced`；任一步失败写 `last_error` 且不写游标）、`sync_all`（串行 + 5 分钟整轮预算 + 60 秒单账户预算 + `spawn_blocking`）、`Backoff`（进程内、按 source id、60 分钟）、`start_poller`（10 分钟、首轮立即、`MissedTickBehavior::Delay`）。删掉了 `to_new_message` 的 `allow(dead_code)`。
+- `lib.rs` 的 `setup` 注册 `start_poller`，与 GitHub 轮询、回写 worker 并列。
+- 事件：成功每个账户发一次 `Some(summary)`，失败发 `null`；无启用账户、无凭据、配置损坏、退避中都**不发事件**。
+- 一处实测修正：`BODY.PEEK[]<0.262144>` 会让 `imap-proto 0.10.2` 解析失败（只认 `<n>`），partial fetch 不可用，已改为分批整封取（见 6.3）。这也意味着单封 5 MB 邮件会完整读进内存一次，靠批大小 20 约束峰值。
+- 测试：`client` 8 个用例（游标记往返与坏值、首次取最新 / 增量取最旧、日期格式、错误分类、状态行大小写）+ 编排 10 个用例（写库与游标、游标回传、两轮不重复、认证失败保留游标并退避、网络失败只重试、`UIDVALIDITY` 变化重扫不重复、账户隔离、空账户零请求、停用账户不轮询、退避时效）。`cargo test --locked` 96 通过（新增 19 个），探针 1 ignored；`fmt --check` 与 `clippy --all-targets -D warnings` 通过。
+- 未闭环：真实账号下的端到端同步仍需手工验证（本地无账号，自动化只能覆盖到取信接口的假实现）。
+
 ### S4 命令层
 
 1. `commands/email.rs`：四个命令的 `*_in(database, input)` 版本 + `#[tauri::command]` 包装，便于测试。
@@ -614,7 +628,7 @@ TcpStream::connect_timeout(8s)
 - 账户上限：第 5 个成功、第 6 个 `validation`；删除一个后可再加。
 - 游标编解码往返；JSON 损坏退化为首次窗口；`uidValidity` 变化触发重扫。
 - `UID FETCH n:*` 返回最后一封时按 UID 过滤，不重复入库。
-- 单账户超上限只处理 100 封，游标停在第 100 封，下一轮继续。
+- 单账户超上限：增量只处理最旧的 100 封，游标停在第 100 封，下一轮继续；首次只处理最新的 100 封，更早的不再补拉。
 - 单封解析失败被跳过，该账户整轮仍成功，`ingested_count` 如实计数。
 - 账户隔离：A 账户 `Auth` 失败时 B 账户仍完成同步，A 的退避不影响 B。
 
@@ -668,7 +682,9 @@ pnpm lint && pnpm test && pnpm build && pnpm check:design && pnpm format:check
 | 首次同步拉全库 | 首屏慢、数据库暴涨 | 14 天窗口 + 单账户 100 封 + 后续逐轮追赶 |
 | 多账户串行超时 | 一轮跑不完，后几个账户饿死 | 整轮 5 分钟预算 + 单账户 60s；下一轮从未处理的账户继续 |
 | 同一服务商并发连接被限流 | 登录失败或断连 | 账户串行，不并行；每账户独立退避 |
-| 阻塞式 IMAP 卡住运行时 | 界面卡顿 | `spawn_blocking` + 连接 20s / 单账户 60s 预算 |
+| 阻塞式 IMAP 卡住运行时 | 界面卡顿 | `spawn_blocking` + 连接 8s / 命令 15s / 单账户 60s 预算 |
+| partial fetch 响应解析失败 | 取信报错，且残留状态行会让下一条命令错位 | `imap-proto 0.10.2` 只认 `<n>`，一律整封取 + 本地截断；每批 20 封约束峰值内存 |
+| 大附件邮件一次性读入内存 | 单封 5 MB 时短暂占用明显 | 分批取信，解析后只留 64 K 字符正文，原始字节随批次释放 |
 | 删除账户误删消息 | 数据不可恢复 | 只软停用，不删来源行（CASCADE 边界） |
 | 误改地址/主机产生「影子账户」 | 来源重复、消息分散 | 编辑时锁住地址与主机；派生 id 保证同一账户不重复 |
 | 新增依赖导致体积与构建问题 | 安装包变大 | native-tls/schannel，无 OpenSSL；体积增量单独记录 |
@@ -719,3 +735,4 @@ pnpm lint && pnpm test && pnpm build && pnpm check:design && pnpm format:check
 - 2026-11-26 22:30：S0 闭环。`abeltomato@163.com` 双场景实测：先发 `ID` 时 `EXAMINE INBOX` 正常（2 封、`UIDVALIDITY=1`、主题「新设备登录提醒」、`Message-ID` 完整）；不发 `ID` 时 `EXAMINE` 返回 `No Response: Unsafe Login`。结论：`ID` 必须发送且放在登录前；163 不返回 `UIDNEXT`，游标只能取本轮处理的最大 UID。
 - 2026-11-26 22:45：S1 完成。凭据键名改为按来源 id 派生，`inbox_sources` 增加邮箱账户的 upsert / 列表 / 配置读写 / 软停用 / 清游标 / 计数，`domain` 与 `infrastructure::email` 补齐账户契约与错误分类；58 个测试通过，探针 1 ignored。
 - 2026-11-26 23:42：S2 完成。`parse_message` 纯函数 + 7 个 `.eml` fixtures + `to_new_message` 映射；fixtures 覆盖 GBK、只有 HTML（含追踪像素）、HTML+附件、缺 `Message-ID`、非法 `Date`、`multipart/signed`；77 个测试通过（新增 19 个），探针 1 ignored。
+- 2026-11-27 09:42：S3 完成。新增 `infrastructure/email/client.rs`（建连 / STARTTLS / `ID` / `LOGIN`+PLAIN 回退 / `EXAMINE` / UID 增量取信 / 游标 / 错误分类），`application/inbox/email.rs` 补齐 `MailFetcher`、`sync_account`、`sync_all`、`Backoff`、`start_poller`，`lib.rs` 注册轮询。实测确认 `BODY.PEEK[]<0.262144>` 无法被 `imap-proto 0.10.2` 解析，改成分批整封取。96 个测试通过（新增 19 个），探针 1 ignored；`fmt --check`、`clippy -D warnings` 通过。
