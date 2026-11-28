@@ -4,6 +4,8 @@ version = "0.7.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2024"
+# 多了回填脚本这个额外 bin 之后，打包时需要明确主程序是哪一个。
+default-run = "tomatodesk"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
